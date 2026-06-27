@@ -18,6 +18,7 @@ defmodule AshGraphql.Resource.Mutation do
     :description,
     :deprecate,
     :result_name,
+    :error_location,
     :__spark_metadata__,
     args: [],
     hide_inputs: [],
@@ -68,6 +69,12 @@ defmodule AshGraphql.Resource.Mutation do
       type: {:wrap_list, :atom},
       doc: "Labels used to include or exclude this mutation from schemas with matching labels.",
       default: []
+    ],
+    error_location: [
+      type: {:one_of, [:in_result, :top_level]},
+      doc:
+        "If the result should have an `errors` and a `result` key, or if errors should be shown in the top level errors key",
+      default: :in_result
     ],
     modify_resolution: [
       type: :mfa,

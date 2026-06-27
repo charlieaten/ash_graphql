@@ -63,6 +63,54 @@ defmodule AshGraphql.DestroyTest do
     refute Ash.get!(AshGraphql.Test.Post, post.id, error?: false)
   end
 
+  test "top-level destroy returns the resource directly" do
+    post =
+      AshGraphql.Test.Post
+      |> Ash.Changeset.for_create(:create, text: "foobar")
+      |> Ash.create!()
+
+    resp =
+      """
+      mutation DeleteTopLevelPost($id: ID!) {
+        deleteTopLevelPost(id: $id) {
+          text
+        }
+      }
+      """
+      |> Absinthe.run(AshGraphql.Test.Schema,
+        variables: %{
+          "id" => post.id
+        }
+      )
+
+    assert {:ok, result} = resp
+
+    assert %{data: %{"deleteTopLevelPost" => %{"text" => "foobar"}}} = result
+    refute Map.has_key?(result, :errors)
+    refute Ash.get!(AshGraphql.Test.Post, post.id, error?: false)
+  end
+
+  test "top-level destroy returns not found failures as root errors" do
+    resp =
+      """
+      mutation DeleteTopLevelPost($id: ID!) {
+        deleteTopLevelPost(id: $id) {
+          text
+        }
+      }
+      """
+      |> Absinthe.run(AshGraphql.Test.Schema,
+        variables: %{
+          "id" => Ash.UUID.generate()
+        }
+      )
+
+    assert {:ok, result} = resp
+
+    assert %{data: %{"deleteTopLevelPost" => nil}, errors: [%{message: message}]} = result
+    assert message =~ "could not be found"
+  end
+
   test "a soft destroy works" do
     post =
       AshGraphql.Test.Post

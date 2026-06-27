@@ -623,6 +623,7 @@ defmodule AshGraphql.Resource do
   @verifiers [
     AshGraphql.Resource.Verifiers.VerifyQueryMetadata,
     AshGraphql.Resource.Verifiers.VerifyReservedTypeName,
+    AshGraphql.Resource.Verifiers.VerifyMutationMetadata,
     AshGraphql.Resource.Verifiers.RequirePkeyDelimiter,
     AshGraphql.Resource.Verifiers.VerifyPaginateRelationshipWith,
     AshGraphql.Resource.Verifiers.VerifyArgumentInputTypes,
@@ -945,7 +946,7 @@ defmodule AshGraphql.Resource do
         name: to_string(mutation.name),
         description: mutation.description || action.description,
         directives: graphql_deprecation_directives(mutation.deprecate),
-        type: mutation_result_type(mutation.name, domain),
+        type: mutation_return_type(resource, mutation, domain),
         __reference__: ref(__ENV__)
       }
     end
@@ -1380,6 +1381,29 @@ defmodule AshGraphql.Resource do
     maybe_wrap_non_null(type, not root_level_errors?)
   end
 
+  defp mutation_return_type(resource, %{type: type, error_location: :top_level}, _domain)
+       when type in [:create, :update, :destroy] do
+    AshGraphql.Resource.Info.type(resource) ||
+      raise("""
+      Resource #{inspect(resource)} is trying to define a top-level mutation
+      which requires a GraphQL type to be defined.
+
+      You should define the type of your resource with `type :my_resource_type`.
+      """)
+  end
+
+  defp mutation_return_type(_resource, mutation, domain) do
+    mutation_result_type(mutation.name, domain)
+  end
+
+  defp top_level_mutation?(%{type: :action, error_location: :top_level}), do: true
+
+  defp top_level_mutation?(%{type: type, error_location: :top_level})
+       when type in [:create, :update, :destroy],
+       do: true
+
+  defp top_level_mutation?(_mutation), do: false
+
   defp mutation_args(mutation, resource, action, schema) do
     if mutation.type == :action or mutation.type == :create do
       input_args = mutation_input_args(mutation, resource, action, schema)
@@ -1632,7 +1656,7 @@ defmodule AshGraphql.Resource do
         end
 
       result =
-        if mutation.action.type == :action && mutation.error_location == :top_level do
+        if top_level_mutation?(mutation) do
           []
         else
           [

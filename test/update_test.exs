@@ -50,6 +50,59 @@ defmodule AshGraphql.UpdateTest do
              resp
   end
 
+  test "top-level update returns the resource directly" do
+    post =
+      AshGraphql.Test.Post
+      |> Ash.Changeset.for_create(:create, text: "foobar")
+      |> Ash.create!()
+
+    resp =
+      """
+      mutation UpdateTopLevelPost($id: ID!, $input: UpdateTopLevelPostInput) {
+        updateTopLevelPost(id: $id, input: $input) {
+          text
+        }
+      }
+      """
+      |> Absinthe.run(AshGraphql.Test.Schema,
+        variables: %{
+          "id" => post.id,
+          "input" => %{
+            "text" => "barbuz"
+          }
+        }
+      )
+
+    assert {:ok, result} = resp
+
+    assert %{data: %{"updateTopLevelPost" => %{"text" => "barbuz"}}} = result
+    refute Map.has_key?(result, :errors)
+  end
+
+  test "top-level update returns not found failures as root errors" do
+    resp =
+      """
+      mutation UpdateTopLevelPost($id: ID!, $input: UpdateTopLevelPostInput) {
+        updateTopLevelPost(id: $id, input: $input) {
+          text
+        }
+      }
+      """
+      |> Absinthe.run(AshGraphql.Test.Schema,
+        variables: %{
+          "id" => Ash.UUID.generate(),
+          "input" => %{
+            "text" => "barbuz"
+          }
+        }
+      )
+
+    assert {:ok, result} = resp
+
+    assert %{data: %{"updateTopLevelPost" => nil}, errors: [%{message: message}]} = result
+    assert message =~ "could not be found"
+  end
+
   test "an update with a managed relationship works" do
     resp =
       """

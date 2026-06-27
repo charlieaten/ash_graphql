@@ -339,6 +339,7 @@ create :create_post, :create
 | [`args`](#graphql-mutations-create-args){: #graphql-mutations-create-args } | `list(atom)` |  | A list of action attributes or arguments that should get their own arguments in the mutation instead of being passed in an input object. |
 | [`hide_inputs`](#graphql-mutations-create-hide_inputs){: #graphql-mutations-create-hide_inputs } | `list(atom)` |  | A list of inputs to hide from the mutation. |
 | [`labels`](#graphql-mutations-create-labels){: #graphql-mutations-create-labels } | `atom \| list(atom)` | `[]` | Labels used to include or exclude this mutation from schemas with matching labels. |
+| [`error_location`](#graphql-mutations-create-error_location){: #graphql-mutations-create-error_location } | `:in_result \| :top_level` | `:in_result` | If the result should have an `errors` and a `result` key, or if errors should be shown in the top level errors key |
 | [`modify_resolution`](#graphql-mutations-create-modify_resolution){: #graphql-mutations-create-modify_resolution } | `mfa` |  | An MFA that will be called with the resolution, the query, and the result of the action as the first three arguments. See the [the guide](/documentation/topics/modifying-the-resolution.html) for more. |
 | [`meta`](#graphql-mutations-create-meta){: #graphql-mutations-create-meta } | `keyword` | `[]` | A keyword list of metadata for the mutation. |
 | [`group`](#graphql-mutations-create-group){: #graphql-mutations-create-group } | `atom` |  | An optional grouping key used to nest this mutation under a group wrapper. |
@@ -388,6 +389,7 @@ update :update_post, :update
 | [`args`](#graphql-mutations-update-args){: #graphql-mutations-update-args } | `list(atom)` |  | A list of action attributes or arguments that should get their own arguments in the mutation instead of being passed in an input object. |
 | [`hide_inputs`](#graphql-mutations-update-hide_inputs){: #graphql-mutations-update-hide_inputs } | `list(atom)` |  | A list of inputs to hide from the mutation. |
 | [`labels`](#graphql-mutations-update-labels){: #graphql-mutations-update-labels } | `atom \| list(atom)` | `[]` | Labels used to include or exclude this mutation from schemas with matching labels. |
+| [`error_location`](#graphql-mutations-update-error_location){: #graphql-mutations-update-error_location } | `:in_result \| :top_level` | `:in_result` | If the result should have an `errors` and a `result` key, or if errors should be shown in the top level errors key |
 | [`modify_resolution`](#graphql-mutations-update-modify_resolution){: #graphql-mutations-update-modify_resolution } | `mfa` |  | An MFA that will be called with the resolution, the query, and the result of the action as the first three arguments. See the [the guide](/documentation/topics/modifying-the-resolution.html) for more. |
 | [`meta`](#graphql-mutations-update-meta){: #graphql-mutations-update-meta } | `keyword` | `[]` | A keyword list of metadata for the mutation. |
 | [`group`](#graphql-mutations-update-group){: #graphql-mutations-update-group } | `atom` |  | An optional grouping key used to nest this mutation under a group wrapper. |
@@ -437,6 +439,7 @@ destroy :destroy_post, :destroy
 | [`args`](#graphql-mutations-destroy-args){: #graphql-mutations-destroy-args } | `list(atom)` |  | A list of action attributes or arguments that should get their own arguments in the mutation instead of being passed in an input object. |
 | [`hide_inputs`](#graphql-mutations-destroy-hide_inputs){: #graphql-mutations-destroy-hide_inputs } | `list(atom)` |  | A list of inputs to hide from the mutation. |
 | [`labels`](#graphql-mutations-destroy-labels){: #graphql-mutations-destroy-labels } | `atom \| list(atom)` | `[]` | Labels used to include or exclude this mutation from schemas with matching labels. |
+| [`error_location`](#graphql-mutations-destroy-error_location){: #graphql-mutations-destroy-error_location } | `:in_result \| :top_level` | `:in_result` | If the result should have an `errors` and a `result` key, or if errors should be shown in the top level errors key |
 | [`modify_resolution`](#graphql-mutations-destroy-modify_resolution){: #graphql-mutations-destroy-modify_resolution } | `mfa` |  | An MFA that will be called with the resolution, the query, and the result of the action as the first three arguments. See the [the guide](/documentation/topics/modifying-the-resolution.html) for more. |
 | [`meta`](#graphql-mutations-destroy-meta){: #graphql-mutations-destroy-meta } | `keyword` | `[]` | A keyword list of metadata for the mutation. |
 | [`group`](#graphql-mutations-destroy-group){: #graphql-mutations-destroy-group } | `atom` |  | An optional grouping key used to nest this mutation under a group wrapper. |

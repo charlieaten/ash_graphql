@@ -1601,6 +1601,7 @@ defmodule AshGraphql.Graphql.Resolver do
            upsert?: upsert?,
            upsert_identity: upsert_identity,
            args: args,
+           error_location: error_location,
            modify_resolution: modify
          } = mutation, _relay_ids?}
       ) do
@@ -1638,8 +1639,8 @@ defmodule AshGraphql.Graphql.Resolver do
               opts
             end
 
-          type_name = mutation_result_type(mutation_name)
-          result_field_name = mutation_result_field_name(mutation)
+          {type_name, nested_fields} =
+            mutation_selection(resource, mutation, error_location)
 
           changeset =
             resource
@@ -1650,7 +1651,7 @@ defmodule AshGraphql.Graphql.Resolver do
               actor: Map.get(context, :actor),
               authorize?: AshGraphql.Domain.Info.authorize?(domain)
             )
-            |> select_fields(resource, resolution, type_name, [result_field_name])
+            |> select_fields(resource, resolution, type_name, nested_fields)
             |> load_fields(
               [
                 domain: domain,
@@ -1664,7 +1665,7 @@ defmodule AshGraphql.Graphql.Resolver do
               resolution.path,
               context,
               type_name,
-              [result_field_name]
+              nested_fields
             )
 
           {result, modify_args} =
@@ -1672,21 +1673,24 @@ defmodule AshGraphql.Graphql.Resolver do
             |> Ash.create(opts)
             |> case do
               {:ok, value} ->
-                {{:ok, add_metadata(%{result: value, errors: []}, value, changeset.action)},
+                {mutation_success_result(value, changeset.action, error_location),
                  [changeset, {:ok, value}]}
 
               {:error, %{changeset: changeset} = error} ->
-                {{:ok,
-                  %{
-                    result: nil,
-                    errors:
-                      to_errors(changeset.errors, context, domain, resource, action, resolution)
-                  }}, [changeset, {:error, error}]}
+                {mutation_error_result(
+                   changeset.errors,
+                   context,
+                   domain,
+                   resource,
+                   action,
+                   resolution,
+                   error_location
+                 ), [changeset, {:error, error}]}
             end
 
           resolution
-          |> Absinthe.Resolution.put_result(to_resolution(result, context, domain))
-          |> add_root_errors(domain, resource, action, modify_args)
+          |> put_mutation_result(result, context, domain, error_location)
+          |> add_mutation_root_errors(domain, resource, action, modify_args, error_location)
           |> modify_resolution(modify, modify_args)
         end
 
@@ -1698,24 +1702,31 @@ defmodule AshGraphql.Graphql.Resolver do
       if AshGraphql.Domain.Info.show_raised_errors?(domain) do
         error = Ash.Error.to_ash_error([e], __STACKTRACE__)
 
-        if AshGraphql.Domain.Info.root_level_errors?(domain) do
+        if error_location == :top_level do
           Absinthe.Resolution.put_result(
             resolution,
-            to_resolution({:error, error}, context, domain)
+            {:error, to_errors(error, context, domain, resource, action, resolution)}
           )
         else
-          Absinthe.Resolution.put_result(
-            resolution,
-            to_resolution(
-              {:ok,
-               %{
-                 result: nil,
-                 errors: to_errors(error, context, domain, resource, action, resolution)
-               }},
-              context,
-              domain
+          if AshGraphql.Domain.Info.root_level_errors?(domain) do
+            Absinthe.Resolution.put_result(
+              resolution,
+              to_resolution({:error, error}, context, domain)
             )
-          )
+          else
+            Absinthe.Resolution.put_result(
+              resolution,
+              to_resolution(
+                {:ok,
+                 %{
+                   result: nil,
+                   errors: to_errors(error, context, domain, resource, action, resolution)
+                 }},
+                context,
+                domain
+              )
+            )
+          end
         end
       else
         something_went_wrong(resolution, e, domain, __STACKTRACE__)
@@ -1732,6 +1743,7 @@ defmodule AshGraphql.Graphql.Resolver do
            identity: identity,
            read_action: read_action,
            args: args,
+           error_location: error_location,
            modify_resolution: modify
          } = mutation, relay_ids?}
       ) do
@@ -1768,7 +1780,8 @@ defmodule AshGraphql.Graphql.Resolver do
                 |> set_query_arguments(read_action, read_action_input)
                 |> Ash.Query.limit(1)
 
-              result_field_name = mutation_result_field_name(mutation)
+              {type_name, nested_fields} =
+                mutation_selection(resource, mutation, error_location)
 
               {result, modify_args} =
                 query
@@ -1785,10 +1798,7 @@ defmodule AshGraphql.Graphql.Resolver do
                   read_action: read_action,
                   domain: domain,
                   actor: Map.get(context, :actor),
-                  select:
-                    get_select(resource, resolution, mutation_result_type(mutation_name), [
-                      result_field_name
-                    ]),
+                  select: get_select(resource, resolution, type_name, nested_fields),
                   load:
                     get_loads(
                       [
@@ -1802,56 +1812,49 @@ defmodule AshGraphql.Graphql.Resolver do
                       resolution,
                       resolution.path,
                       context,
-                      mutation_result_type(mutation_name),
-                      [result_field_name]
+                      type_name,
+                      nested_fields
                     )
                 )
                 |> case do
                   %Ash.BulkResult{status: :success, records: [value]} ->
                     action = Ash.Resource.Info.action(resource, action)
 
-                    {{:ok, add_metadata(%{result: value, errors: []}, value, action)},
+                    {mutation_success_result(value, action, error_location),
                      [query, {:ok, value}]}
 
                   %Ash.BulkResult{status: :success, records: []} ->
-                    {{:ok,
-                      %{
-                        result: nil,
-                        errors:
-                          to_errors(
-                            [
-                              Ash.Error.Query.NotFound.exception(
-                                primary_key: Map.new(filter || []),
-                                resource: resource
-                              )
-                            ],
-                            context,
-                            domain,
-                            resource,
-                            action,
-                            resolution
-                          )
-                      }},
-                     [
-                       query,
-                       {:error,
-                        Ash.Error.Query.NotFound.exception(
-                          primary_key: Map.new(filter || []),
-                          resource: resource
-                        )}
-                     ]}
+                    error =
+                      Ash.Error.Query.NotFound.exception(
+                        primary_key: Map.new(filter || []),
+                        resource: resource
+                      )
+
+                    {mutation_error_result(
+                       [error],
+                       context,
+                       domain,
+                       resource,
+                       action,
+                       resolution,
+                       error_location
+                     ), [query, {:error, error}]}
 
                   %Ash.BulkResult{status: :error, errors: errors} ->
-                    {{:ok,
-                      %{
-                        result: nil,
-                        errors: to_errors(errors, context, domain, resource, action, resolution)
-                      }}, [query, {:error, errors}]}
+                    {mutation_error_result(
+                       errors,
+                       context,
+                       domain,
+                       resource,
+                       action,
+                       resolution,
+                       error_location
+                     ), [query, {:error, errors}]}
                 end
 
               resolution
-              |> Absinthe.Resolution.put_result(to_resolution(result, context, domain))
-              |> add_root_errors(domain, resource, action, modify_args)
+              |> put_mutation_result(result, context, domain, error_location)
+              |> add_mutation_root_errors(domain, resource, action, modify_args, error_location)
               |> modify_resolution(modify, modify_args)
 
             {:error, error} ->
@@ -1870,24 +1873,31 @@ defmodule AshGraphql.Graphql.Resolver do
       if AshGraphql.Domain.Info.show_raised_errors?(domain) do
         error = Ash.Error.to_ash_error([e], __STACKTRACE__)
 
-        if AshGraphql.Domain.Info.root_level_errors?(domain) do
+        if error_location == :top_level do
           Absinthe.Resolution.put_result(
             resolution,
-            to_resolution({:error, error}, context, domain)
+            {:error, to_errors(error, context, domain, resource, action, resolution)}
           )
         else
-          Absinthe.Resolution.put_result(
-            resolution,
-            to_resolution(
-              {:ok,
-               %{
-                 result: nil,
-                 errors: to_errors(error, context, domain, resource, action, resolution)
-               }},
-              context,
-              domain
+          if AshGraphql.Domain.Info.root_level_errors?(domain) do
+            Absinthe.Resolution.put_result(
+              resolution,
+              to_resolution({:error, error}, context, domain)
             )
-          )
+          else
+            Absinthe.Resolution.put_result(
+              resolution,
+              to_resolution(
+                {:ok,
+                 %{
+                   result: nil,
+                   errors: to_errors(error, context, domain, resource, action, resolution)
+                 }},
+                context,
+                domain
+              )
+            )
+          end
         end
       else
         something_went_wrong(resolution, e, domain, __STACKTRACE__)
@@ -1904,6 +1914,7 @@ defmodule AshGraphql.Graphql.Resolver do
            identity: identity,
            read_action: read_action,
            args: args,
+           error_location: error_location,
            modify_resolution: modify
          } = mutation, relay_ids?}
       ) do
@@ -1932,7 +1943,8 @@ defmodule AshGraphql.Graphql.Resolver do
 
           case filter do
             {:ok, filter} ->
-              result_field_name = mutation_result_field_name(mutation)
+              {type_name, nested_fields} =
+                mutation_selection(resource, mutation, error_location)
 
               query =
                 resource
@@ -1946,8 +1958,8 @@ defmodule AshGraphql.Graphql.Resolver do
                   resource,
                   resolution,
                   context,
-                  mutation_name,
-                  result_field_name
+                  mutation,
+                  error_location
                 )
 
               {result, modify_args} =
@@ -1965,57 +1977,47 @@ defmodule AshGraphql.Graphql.Resolver do
                   authorize?: AshGraphql.Domain.Info.authorize?(domain),
                   actor: Map.get(context, :actor),
                   domain: domain,
-                  select:
-                    get_select(resource, resolution, mutation_result_type(mutation_name), [
-                      result_field_name
-                    ])
+                  select: get_select(resource, resolution, type_name, nested_fields)
                 )
                 |> case do
                   %Ash.BulkResult{status: :success, records: [value]} ->
                     action = Ash.Resource.Info.action(resource, action)
 
-                    {{:ok, add_metadata(%{result: value, errors: []}, value, action)},
+                    {mutation_success_result(value, action, error_location),
                      [query, {:ok, value}]}
 
                   %Ash.BulkResult{status: :success, records: []} ->
-                    {{:ok,
-                      %{
-                        result: nil,
-                        errors:
-                          to_errors(
-                            [
-                              Ash.Error.Query.NotFound.exception(
-                                primary_key: Map.new(filter || []),
-                                resource: resource
-                              )
-                            ],
-                            context,
-                            domain,
-                            resource,
-                            action,
-                            resolution
-                          )
-                      }},
-                     [
-                       query,
-                       {:error,
-                        Ash.Error.Query.NotFound.exception(
-                          primary_key: Map.new(filter || []),
-                          resource: resource
-                        )}
-                     ]}
+                    error =
+                      Ash.Error.Query.NotFound.exception(
+                        primary_key: Map.new(filter || []),
+                        resource: resource
+                      )
+
+                    {mutation_error_result(
+                       [error],
+                       context,
+                       domain,
+                       resource,
+                       action,
+                       resolution,
+                       error_location
+                     ), [query, {:error, error}]}
 
                   %Ash.BulkResult{status: :error, errors: errors} ->
-                    {{:ok,
-                      %{
-                        result: nil,
-                        errors: to_errors(errors, context, domain, resource, action, resolution)
-                      }}, [query, {:error, errors}]}
+                    {mutation_error_result(
+                       errors,
+                       context,
+                       domain,
+                       resource,
+                       action,
+                       resolution,
+                       error_location
+                     ), [query, {:error, errors}]}
                 end
 
               resolution
-              |> Absinthe.Resolution.put_result(to_resolution(result, context, domain))
-              |> add_root_errors(domain, resource, action, modify_args)
+              |> put_mutation_result(result, context, domain, error_location)
+              |> add_mutation_root_errors(domain, resource, action, modify_args, error_location)
               |> modify_resolution(modify, modify_args)
 
             {:error, error} ->
@@ -2034,24 +2036,31 @@ defmodule AshGraphql.Graphql.Resolver do
       if AshGraphql.Domain.Info.show_raised_errors?(domain) do
         error = Ash.Error.to_ash_error([e], __STACKTRACE__)
 
-        if AshGraphql.Domain.Info.root_level_errors?(domain) do
+        if error_location == :top_level do
           Absinthe.Resolution.put_result(
             resolution,
-            to_resolution({:error, error}, context, domain)
+            {:error, to_errors(error, context, domain, resource, action, resolution)}
           )
         else
-          Absinthe.Resolution.put_result(
-            resolution,
-            to_resolution(
-              {:ok,
-               %{
-                 result: nil,
-                 errors: to_errors(error, context, domain, resource, action, resolution)
-               }},
-              context,
-              domain
+          if AshGraphql.Domain.Info.root_level_errors?(domain) do
+            Absinthe.Resolution.put_result(
+              resolution,
+              to_resolution({:error, error}, context, domain)
             )
-          )
+          else
+            Absinthe.Resolution.put_result(
+              resolution,
+              to_resolution(
+                {:ok,
+                 %{
+                   result: nil,
+                   errors: to_errors(error, context, domain, resource, action, resolution)
+                 }},
+                context,
+                domain
+              )
+            )
+          end
         end
       else
         something_went_wrong(resolution, e, domain, __STACKTRACE__)
@@ -2216,6 +2225,63 @@ defmodule AshGraphql.Graphql.Resolver do
     end
   end
 
+  defp mutation_selection(resource, _mutation, :top_level) do
+    {AshGraphql.Resource.Info.type(resource), []}
+  end
+
+  defp mutation_selection(_resource, %{name: mutation_name} = mutation, _error_location) do
+    {mutation_result_type(mutation_name), [mutation_result_field_name(mutation)]}
+  end
+
+  defp mutation_success_result(value, _action, :top_level), do: {:ok, value}
+
+  defp mutation_success_result(value, action, _error_location) do
+    {:ok, add_metadata(%{result: value, errors: []}, value, action)}
+  end
+
+  defp mutation_error_result(errors, context, domain, resource, action, resolution, :top_level) do
+    {:error, to_errors(errors, context, domain, resource, action, resolution)}
+  end
+
+  defp mutation_error_result(
+         errors,
+         context,
+         domain,
+         resource,
+         action,
+         resolution,
+         _error_location
+       ) do
+    {:ok,
+     %{
+       result: nil,
+       errors: to_errors(errors, context, domain, resource, action, resolution)
+     }}
+  end
+
+  defp put_mutation_result(resolution, {:error, errors}, _context, _domain, :top_level) do
+    Absinthe.Resolution.put_result(resolution, {:error, errors})
+  end
+
+  defp put_mutation_result(resolution, result, context, domain, _error_location) do
+    Absinthe.Resolution.put_result(resolution, to_resolution(result, context, domain))
+  end
+
+  defp add_mutation_root_errors(resolution, _domain, _resource, _action, _modify_args, :top_level) do
+    resolution
+  end
+
+  defp add_mutation_root_errors(
+         resolution,
+         domain,
+         resource,
+         action,
+         modify_args,
+         _error_location
+       ) do
+    add_root_errors(resolution, domain, resource, action, modify_args)
+  end
+
   # Pre-load aggregates and calculations on the query before destruction
   # to ensure they are available in the returned record for GraphQL serialization
   defp pre_load_for_mutation(
@@ -2224,9 +2290,11 @@ defmodule AshGraphql.Graphql.Resolver do
          resource,
          resolution,
          context,
-         mutation_name,
-         result_field_name
+         mutation,
+         error_location
        ) do
+    {type_name, nested_fields} = mutation_selection(resource, mutation, error_location)
+
     load_opts = [
       domain: domain,
       tenant: Map.get(context, :tenant),
@@ -2242,8 +2310,8 @@ defmodule AshGraphql.Graphql.Resolver do
       resolution,
       resolution.path,
       context,
-      mutation_result_type(mutation_name),
-      [result_field_name]
+      type_name,
+      nested_fields
     )
   end
 
