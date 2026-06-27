@@ -171,6 +171,7 @@ defmodule AshGraphql.Domain do
     ],
     verifiers: [
       AshGraphql.Resource.Verifiers.VerifyDomainQueryMetadata,
+      AshGraphql.Domain.Verifiers.VerifyMutationMetadata,
       AshGraphql.Domain.Verifiers.VerifySubscriptionPubsub,
       AshGraphql.Domain.Verifiers.VerifyActionsPublic
     ]
