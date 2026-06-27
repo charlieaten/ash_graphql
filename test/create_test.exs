@@ -13,6 +13,44 @@ defmodule AshGraphql.CreateTest do
     end)
   end
 
+  test "top-level create returns the resource directly" do
+    resp =
+      """
+      mutation CreateTopLevelPost($input: CreateTopLevelPostInput) {
+        createTopLevelPost(input: $input) {
+          text
+        }
+      }
+      """
+      |> Absinthe.run(AshGraphql.Test.Schema,
+        variables: %{"input" => %{"text" => "foobar", "confirmation" => "foobar"}}
+      )
+
+    assert {:ok, result} = resp
+
+    assert %{data: %{"createTopLevelPost" => %{"text" => "foobar"}}} = result
+    refute Map.has_key?(result, :errors)
+  end
+
+  test "top-level create returns validation failures as root errors" do
+    resp =
+      """
+      mutation CreateTopLevelPost($input: CreateTopLevelPostInput) {
+        createTopLevelPost(input: $input) {
+          text
+        }
+      }
+      """
+      |> Absinthe.run(AshGraphql.Test.Schema,
+        variables: %{"input" => %{"text" => "foobar", "confirmation" => "barfoo"}}
+      )
+
+    assert {:ok, result} = resp
+
+    assert %{data: %{"createTopLevelPost" => nil}, errors: [%{message: message}]} = result
+    assert message =~ "confirmation did not match value"
+  end
+
   test "metadata is in the result" do
     resp =
       """

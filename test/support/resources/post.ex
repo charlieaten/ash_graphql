@@ -244,6 +244,7 @@ defmodule AshGraphql.Test.Post do
       create :create_post_with_error, :create_with_error
       create :create_post_with_required_error, :create_with_required_error
       create :create_post, :create_confirm
+      create :create_top_level_post, :create_confirm, error_location: :top_level
       create :create_post_with_length_constraint, :create_with_length_constraint
       create :upsert_post, :upsert, upsert?: true
 
@@ -264,6 +265,7 @@ defmodule AshGraphql.Test.Post do
       create :create_post_with_invalid_arguments_names, :create_with_invalid_arguments_names
 
       update :update_post, :update, labels: [:admin]
+      update :update_top_level_post, :update, error_location: :top_level
       update :update_post_with_arg, :update, args: [:text]
       update :update_post_with_comments, :update_with_comments
       update :update_post_confirm, :update_confirm
@@ -278,6 +280,7 @@ defmodule AshGraphql.Test.Post do
 
       destroy :archive_post, :archive
       destroy :delete_post, :destroy
+      destroy :delete_top_level_post, :destroy, error_location: :top_level
       destroy :delete_best_post, :destroy, read_action: :best_post, identity: false
       destroy :delete_post_with_error, :destroy_with_error
 

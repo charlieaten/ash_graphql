@@ -37,6 +37,8 @@ graphql do
 end
 ```
 
+Regular `create`, `update`, and `destroy` mutations can also opt into root level errors per mutation with `error_location :top_level`. In this mode, the mutation returns the resource type directly instead of a `{result, errors}` payload. Actions with metadata cannot use this mode, because action metadata is exposed on the mutation payload wrapper.
+
 ## Error Handler
 
 Setting an error handler allows you to use things like `gettext` to translate errors and/or modify errors in some way. This error handler will take the error object to be returned, and the context. See the [absinthe docs](https://hexdocs.pm/absinthe/context-and-authentication.html#context-and-plugs) for adding to the absinthe context (i.e for setting a locale).
