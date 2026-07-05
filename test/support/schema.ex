@@ -49,6 +49,14 @@ defmodule AshGraphql.Test.Schema do
         |> AshGraphql.handle_errors(AshGraphql.Test.Post, resolution)
       end)
     end
+
+    field :custom_get_explicit_field_unloaded, :explicit_fields do
+      arg(:code, non_null(:id))
+
+      resolve(fn %{code: code}, _resolution ->
+        Ash.get(AshGraphql.Test.ExplicitFields, code)
+      end)
+    end
   end
 
   mutation do

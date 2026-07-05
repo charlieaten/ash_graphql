@@ -575,9 +575,10 @@ defmodule AshGraphql do
 
       attrs =
         resource
-        |> Ash.Resource.Info.public_attributes()
+        |> attributes_for_graphql()
+        |> Enum.filter(&AshGraphql.Resource.Info.show_field?(resource, &1.name))
         |> Enum.concat(all_arguments(resource, all_domains, labels))
-        |> Enum.concat(Ash.Resource.Info.calculations(resource))
+        |> Enum.concat(calculations_for_type_generation(resource))
         |> Enum.concat(
           resource
           |> Ash.Resource.Info.actions()
@@ -1239,7 +1240,8 @@ defmodule AshGraphql do
 
     calculation_arguments =
       resource
-      |> Ash.Resource.Info.public_calculations()
+      |> calculations_for_graphql()
+      |> Enum.filter(&AshGraphql.Resource.Info.show_field?(resource, &1.name))
       |> Enum.flat_map(& &1.arguments)
 
     action_arguments ++ calculation_arguments
@@ -1294,9 +1296,36 @@ defmodule AshGraphql do
   defp unwrap_type({:array, type}), do: unwrap_type(type)
   defp unwrap_type(type), do: type
 
+  defp attributes_for_graphql(resource) do
+    if AshGraphql.Resource.Info.fields_configured?(resource) do
+      Ash.Resource.Info.attributes(resource)
+    else
+      Ash.Resource.Info.public_attributes(resource)
+    end
+  end
+
+  defp calculations_for_graphql(resource) do
+    if AshGraphql.Resource.Info.fields_configured?(resource) do
+      Ash.Resource.Info.calculations(resource)
+    else
+      Ash.Resource.Info.public_calculations(resource)
+    end
+  end
+
+  defp calculations_for_type_generation(resource) do
+    if AshGraphql.Resource.Info.fields_configured?(resource) do
+      resource
+      |> Ash.Resource.Info.calculations()
+      |> Enum.filter(&AshGraphql.Resource.Info.show_field?(resource, &1.name))
+    else
+      Ash.Resource.Info.calculations(resource)
+    end
+  end
+
   defp get_nested_embedded_types(embedded_type) do
     embedded_type
-    |> Ash.Resource.Info.public_attributes()
+    |> attributes_for_graphql()
+    |> Enum.filter(&AshGraphql.Resource.Info.show_field?(embedded_type, &1.name))
     |> Enum.filter(&AshGraphql.Resource.embedded?(&1.type))
     |> Enum.map(fn attribute ->
       {attribute, unwrap_type(attribute.type)}
@@ -1527,7 +1556,7 @@ defmodule AshGraphql do
   def validate_domains_for_relationships!(ash_resources, all_domains) do
     for resource <- ash_resources,
         AshGraphql.Resource in Spark.extensions(resource),
-        relationship <- Ash.Resource.Info.public_relationships(resource),
+        relationship <- relationships_for_domain_validation(resource),
         AshGraphql.Resource in Spark.extensions(relationship.destination),
         relationship.destination not in ash_resources do
       destination_domain = Ash.Resource.Info.domain(relationship.destination)
@@ -1549,5 +1578,15 @@ defmodule AshGraphql do
     end
 
     :ok
+  end
+
+  defp relationships_for_domain_validation(resource) do
+    if AshGraphql.Resource.Info.fields_configured?(resource) do
+      resource
+      |> Ash.Resource.Info.relationships()
+      |> Enum.filter(&AshGraphql.Resource.Info.show_field?(resource, &1.name))
+    else
+      Ash.Resource.Info.public_relationships(resource)
+    end
   end
 end

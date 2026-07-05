@@ -33,6 +33,17 @@ defmodule MyApp.Blog.Post do
     # The GraphQL type name (required)
     type :post
 
+    # Explicit output fields. When present, this block is exclusive:
+    # it replaces show_fields, hide_fields, relationships, field_names,
+    # and nullable_fields.
+    # Listed fields are exposed even if the underlying Ash field is not public.
+    # Normal fields are nullable by default; identity fields default to non-null ID.
+    fields do
+      identity :id
+      field :title
+      field :summary, source: :computed_summary
+    end
+
     # Customize attribute types for GraphQL
     attribute_types view_count: :string
 
