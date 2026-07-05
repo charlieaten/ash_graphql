@@ -71,6 +71,8 @@ defmodule AshGraphql.Test.Domain do
     resource(AshGraphql.Test.DomainLevelPubsubResource)
     resource(AshGraphql.Test.ResourceLevelPubsubResource)
     resource(AshGraphql.Test.ErrorHandling)
+    resource(AshGraphql.Test.ExplicitFields)
+    resource(AshGraphql.Test.ExplicitFieldTranslation)
     resource(AshGraphql.Test.ForbiddenFieldModeOrg)
     resource(AshGraphql.Test.ForbiddenFieldMode)
     resource(AshGraphql.Test.ForbiddenFieldNullableMode)

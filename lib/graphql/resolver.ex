@@ -2381,11 +2381,14 @@ defmodule AshGraphql.Graphql.Resolver do
 
   defp resource_loads(fields, resource, resolution, load_opts, path, context) do
     Enum.flat_map(fields, fn selection ->
+      identifier =
+        AshGraphql.Resource.Info.field_source(resource, selection.schema_node.identifier)
+
       cond do
-        aggregate = Ash.Resource.Info.aggregate(resource, selection.schema_node.identifier) ->
+        aggregate = Ash.Resource.Info.aggregate(resource, identifier) ->
           [aggregate.name]
 
-        calculation = Ash.Resource.Info.calculation(resource, selection.schema_node.identifier) ->
+        calculation = Ash.Resource.Info.calculation(resource, identifier) ->
           arguments =
             selection.arguments
             |> Map.new(fn argument ->
@@ -2426,7 +2429,7 @@ defmodule AshGraphql.Graphql.Resolver do
             [{calculation.name, arguments}]
           end
 
-        attribute = Ash.Resource.Info.attribute(resource, selection.schema_node.identifier) ->
+        attribute = Ash.Resource.Info.attribute(resource, identifier) ->
           if Ash.Type.can_load?(attribute.type, attribute.constraints) do
             loads =
               type_loads(
@@ -2484,7 +2487,7 @@ defmodule AshGraphql.Graphql.Resolver do
             [attribute.name]
           end
 
-        relationship = Ash.Resource.Info.relationship(resource, selection.schema_node.identifier) ->
+        relationship = Ash.Resource.Info.relationship(resource, identifier) ->
           read_action =
             case relationship.read_action do
               nil ->
@@ -2516,7 +2519,11 @@ defmodule AshGraphql.Graphql.Resolver do
           relay? = pagination_strategy == :relay
           result_fields = get_result_fields(pagination_strategy, relay?)
 
-          nested = Enum.map(Enum.reverse([selection | path]), & &1.name)
+          nested =
+            Enum.flat_map(Enum.reverse([selection | path]), fn
+              %{name: name} -> [name]
+              _ -> []
+            end)
 
           related_query =
             if pagination_strategy && pagination_strategy != :none do
@@ -2936,6 +2943,8 @@ defmodule AshGraphql.Graphql.Resolver do
   end
 
   defp field_or_relationship(resource, identifier) do
+    identifier = AshGraphql.Resource.Info.field_source(resource, identifier)
+
     case Ash.Resource.Info.attribute(resource, identifier) do
       nil ->
         case Ash.Resource.Info.relationship(resource, identifier) do
@@ -3176,7 +3185,16 @@ defmodule AshGraphql.Graphql.Resolver do
         end
       end
 
+    result =
+      load_unloaded_calculation(result, parent, calculation, resolution, context, domain)
+
     case result do
+      {:error, error} ->
+        Absinthe.Resolution.put_result(
+          resolution,
+          to_resolution({:error, error}, context, domain)
+        )
+
       %struct{} when struct == Ash.ForbiddenField ->
         if field_policy_type do
           Absinthe.Resolution.put_result(
@@ -3226,6 +3244,54 @@ defmodule AshGraphql.Graphql.Resolver do
     do: unwrap_type(type)
 
   defp unwrap_type(other), do: other
+
+  defp load_unloaded_calculation(
+         %Ash.NotLoaded{type: :calculation, field: field},
+         parent,
+         calculation,
+         resolution,
+         context,
+         domain
+       )
+       when field == calculation.name do
+    arguments =
+      resolution.arguments
+      |> Map.new()
+      |> then(fn args ->
+        if resolution.definition.alias do
+          Map.put(args, :as, {:__ash_graphql_calculation__, resolution.definition.alias})
+        else
+          args
+        end
+      end)
+
+    opts = [
+      actor: Map.get(context, :actor),
+      authorize?: AshGraphql.Domain.Info.authorize?(domain),
+      context: get_context(context),
+      domain: domain,
+      tenant: Map.get(context, :tenant),
+      tracer: AshGraphql.Domain.Info.tracer(domain)
+    ]
+
+    with {:ok, parent} <- Ash.load(parent, [{calculation.name, arguments}], opts) do
+      if resolution.definition.alias do
+        Map.get(parent.calculations, {:__ash_graphql_calculation__, resolution.definition.alias})
+      else
+        resource_calculation = Ash.Resource.Info.calculation(parent.__struct__, calculation.name)
+
+        if resource_calculation && !resource_calculation.field? do
+          Map.get(parent.calculations, calculation.name)
+        else
+          Map.get(parent, calculation.name)
+        end
+      end
+    end
+  end
+
+  defp load_unloaded_calculation(result, _parent, _calculation, _resolution, _context, _domain) do
+    result
+  end
 
   def resolve_field_policy_type(%{__field_policy_type__: type}, _resolution), do: type
 

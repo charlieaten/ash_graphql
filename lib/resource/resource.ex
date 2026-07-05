@@ -412,6 +412,78 @@ defmodule AshGraphql.Resource do
 
   def subscriptions, do: [@subscribe]
 
+  @field %Spark.Dsl.Entity{
+    name: :field,
+    args: [:name],
+    describe: "A field to expose on the resource's GraphQL type",
+    examples: [
+      "field :name",
+      "field :name, source: :resolved_name"
+    ],
+    schema: [
+      name: [
+        type: :atom,
+        required: true,
+        doc: "The name to expose for the field in GraphQL."
+      ],
+      source: [
+        type: :atom,
+        doc: "The Ash field to use as the source when it differs from the GraphQL field name."
+      ]
+    ],
+    target: AshGraphql.Resource.Field
+  }
+
+  @identity_field %Spark.Dsl.Entity{
+    name: :identity,
+    args: [:name],
+    describe: "A non-null identity field to expose on the resource's GraphQL type",
+    examples: [
+      "identity :id",
+      "identity :id, source: :uuid"
+    ],
+    schema: [
+      name: [
+        type: :atom,
+        required: true,
+        doc: "The name to expose for the identity field in GraphQL."
+      ],
+      source: [
+        type: :atom,
+        doc:
+          "The Ash field to use as the source when it differs from the GraphQL identity field name."
+      ]
+    ],
+    target: AshGraphql.Resource.Field,
+    auto_set_fields: [
+      identity?: true
+    ]
+  }
+
+  @fields %Spark.Dsl.Section{
+    name: :fields,
+    describe: """
+    Fields to expose on the resource's GraphQL type.
+
+    When configured, this list is exclusive and replaces `show_fields`, `hide_fields`,
+    `relationships`, `field_names`, and `nullable_fields` for output fields.
+    """,
+    examples: [
+      """
+      fields do
+        identity :code
+        field :name, source: :resolved_name
+        field :emoji
+        field :dial_code
+      end
+      """
+    ],
+    entities: [
+      @field,
+      @identity_field
+    ]
+  }
+
   @graphql %Spark.Dsl.Section{
     name: :graphql,
     imports: [AshGraphql.Resource.Helpers],
@@ -605,6 +677,7 @@ defmodule AshGraphql.Resource do
       ]
     ],
     sections: [
+      @fields,
       @queries,
       @mutations,
       @subscriptions,
@@ -2021,8 +2094,7 @@ defmodule AshGraphql.Resource do
           resource
           |> Ash.Resource.Info.attributes()
           |> Enum.filter(fn attribute ->
-            AshGraphql.Resource.Info.show_field?(resource, attribute.name) &&
-              attribute.name in action.accept && attribute.writable? &&
+            attribute.name in action.accept && attribute.writable? &&
               attribute.name not in hide_inputs
           end)
           |> Enum.map(fn attribute ->
@@ -2794,14 +2866,17 @@ defmodule AshGraphql.Resource do
 
   defp attribute_field_policy_value_fields(resource, schema) do
     resource
-    |> public_attributes_for_graphql()
-    |> Enum.filter(&materialized_field_policy_field?(resource, &1.name))
+    |> attributes_for_graphql()
+    |> Enum.filter(
+      &(AshGraphql.Resource.Info.show_field?(resource, &1.name) &&
+          materialized_field_policy_field?(resource, &1.name))
+    )
     |> Enum.map(&{&1.name, attribute_output_type(resource, &1, schema)})
   end
 
   defp aggregate_field_policy_value_fields(resource, schema) do
     resource
-    |> Ash.Resource.Info.public_aggregates()
+    |> aggregates_for_graphql()
     |> Enum.filter(
       &(AshGraphql.Resource.Info.show_field?(resource, &1.name) &&
           materialized_field_policy_field?(resource, &1.name))
@@ -2811,7 +2886,7 @@ defmodule AshGraphql.Resource do
 
   defp calculation_field_policy_value_fields(resource, schema) do
     resource
-    |> Ash.Resource.Info.public_calculations()
+    |> calculations_for_graphql()
     |> Enum.filter(
       &(AshGraphql.Resource.Info.show_field?(resource, &1.name) &&
           materialized_field_policy_field?(resource, &1.name))
@@ -3343,7 +3418,7 @@ defmodule AshGraphql.Resource do
 
   defp filter_attribute_types(resource, schema) do
     resource
-    |> Ash.Resource.Info.public_attributes()
+    |> attributes_for_graphql()
     |> Enum.filter(
       &(AshGraphql.Resource.Info.show_field?(resource, &1.name) && filterable?(&1, resource))
     )
@@ -3352,7 +3427,7 @@ defmodule AshGraphql.Resource do
 
   defp filter_aggregate_types(resource, schema) do
     resource
-    |> Ash.Resource.Info.public_aggregates()
+    |> aggregates_for_graphql()
     |> Enum.filter(
       &(AshGraphql.Resource.Info.show_field?(resource, &1.name) && filterable?(&1, resource))
     )
@@ -3690,7 +3765,7 @@ defmodule AshGraphql.Resource do
   defp calc_input_fields(resource, schema) do
     calcs =
       resource
-      |> Ash.Resource.Info.public_calculations()
+      |> calculations_for_graphql()
       |> Enum.filter(&AshGraphql.Resource.Info.show_field?(resource, &1.name))
       |> Enum.reject(fn
         %{type: {:array, _}} ->
@@ -3747,7 +3822,7 @@ defmodule AshGraphql.Resource do
   # sobelow_skip ["DOS.StringToAtom"]
   defp calculation_filter_inputs(resource, schema) do
     resource
-    |> Ash.Resource.Info.public_calculations()
+    |> calculations_for_graphql()
     |> Enum.flat_map(fn %{calculation: {module, _}} = calculation ->
       Code.ensure_compiled(module)
 
@@ -3849,7 +3924,7 @@ defmodule AshGraphql.Resource do
     field_names = AshGraphql.Resource.Info.field_names(resource)
 
     resource
-    |> Ash.Resource.Info.public_attributes()
+    |> attributes_for_graphql()
     |> Enum.filter(&(filterable_and_shown_field?(resource, &1) && filterable?(&1, resource)))
     |> Enum.flat_map(fn attribute ->
       [
@@ -3870,7 +3945,7 @@ defmodule AshGraphql.Resource do
 
     if Ash.DataLayer.data_layer_can?(resource, :aggregate_filter) do
       resource
-      |> Ash.Resource.Info.public_aggregates()
+      |> aggregates_for_graphql()
       |> Enum.filter(&(filterable_and_shown_field?(resource, &1) && filterable?(&1, resource)))
       |> Enum.flat_map(fn aggregate ->
         [
@@ -3895,7 +3970,7 @@ defmodule AshGraphql.Resource do
     expression_calculations? = Ash.DataLayer.data_layer_can?(resource, :expression_calculation)
 
     resource
-    |> Ash.Resource.Info.public_calculations()
+    |> calculations_for_graphql()
     # A handler filters against something else entirely, so it requires neither
     # the data layer's expression calculation support nor the calculation being
     # filterable on its own.
@@ -4040,7 +4115,7 @@ defmodule AshGraphql.Resource do
     relationships = AshGraphql.Resource.Info.relationships(resource)
 
     resource
-    |> Ash.Resource.Info.public_relationships()
+    |> relationships_for_graphql()
     |> Enum.filter(
       &(filterable_and_shown_field?(resource, &1) &&
           AshGraphql.Resource.Info.derive_filter?(&1.destination) &&
@@ -4714,9 +4789,9 @@ defmodule AshGraphql.Resource do
     field_names = AshGraphql.Resource.Info.field_names(resource)
 
     resource
-    |> Ash.Resource.Info.public_attributes()
-    |> Enum.concat(Ash.Resource.Info.public_calculations(resource))
-    |> Enum.concat(Ash.Resource.Info.public_aggregates(resource))
+    |> attributes_for_graphql()
+    |> Enum.concat(calculations_for_graphql(resource))
+    |> Enum.concat(aggregates_for_graphql(resource))
     |> Enum.filter(
       &(AshGraphql.Resource.Info.show_field?(resource, &1.name) &&
           AshGraphql.Resource.Info.sortable_field?(resource, &1.name) &&
@@ -5100,12 +5175,17 @@ defmodule AshGraphql.Resource do
   end
 
   defp fields(resource, domain, schema, relay_ids?, query \\ nil) do
-    attributes(resource, domain, schema, relay_ids?) ++
-      metadata(query, resource, schema) ++
-      relationships(resource, domain, schema) ++
-      aggregates(resource, domain, schema) ++
-      calculations(resource, domain, schema) ++
-      keyset(resource, schema)
+    fields =
+      if AshGraphql.Resource.Info.fields_configured?(resource) do
+        configured_fields(resource, domain, schema)
+      else
+        attributes(resource, domain, schema, relay_ids?) ++
+          relationships(resource, domain, schema) ++
+          aggregates(resource, domain, schema) ++
+          calculations(resource, domain, schema)
+      end
+
+    fields ++ metadata(query, resource, schema) ++ keyset(resource, schema)
   end
 
   defp metadata(nil, _resource, _schema) do
@@ -5168,7 +5248,7 @@ defmodule AshGraphql.Resource do
 
     attributes =
       resource
-      |> public_attributes_for_graphql()
+      |> attributes_for_graphql()
       |> Enum.filter(&AshGraphql.Resource.Info.show_field?(resource, &1.name))
       |> Enum.map(fn attribute ->
         field_type =
@@ -5197,11 +5277,82 @@ defmodule AshGraphql.Resource do
         }
       end)
 
-    if relay_ids? or AshGraphql.Resource.Info.encode_primary_key?(resource) do
-      encoded_id(resource, schema, relay_ids?) ++
+    cond do
+      AshGraphql.Resource.Info.fields_configured?(resource) ->
         attributes
+
+      relay_ids? or AshGraphql.Resource.Info.encode_primary_key?(resource) ->
+        encoded_id(resource, schema, relay_ids?) ++ attributes
+
+      true ->
+        attributes
+    end
+  end
+
+  defp configured_fields(resource, domain, schema) do
+    resource
+    |> AshGraphql.Resource.Info.fields()
+    |> Enum.map(&configured_field(resource, domain, schema, &1))
+  end
+
+  defp configured_field(resource, domain, schema, field) do
+    source = AshGraphql.Resource.Info.field_source(field)
+
+    cond do
+      attribute = Ash.Resource.Info.attribute(resource, source) ->
+        attribute_field(resource, domain, schema, attribute, field.name)
+
+      aggregate = Ash.Resource.Info.aggregate(resource, source) ->
+        aggregate_field(resource, domain, schema, aggregate, field.name)
+
+      calculation = Ash.Resource.Info.calculation(resource, source) ->
+        calculation_field(resource, domain, schema, calculation, field.name)
+
+      relationship = Ash.Resource.Info.relationship(resource, source) ->
+        relationship_field(resource, domain, schema, relationship, field.name, field.name)
+
+      true ->
+        raise Spark.Error.DslError,
+          module: resource,
+          path: [:graphql, :fields],
+          message: """
+          Configured GraphQL field #{inspect(field.name)} uses source #{inspect(source)}, but that source is not an Ash attribute, relationship, aggregate, or calculation.
+
+          If this is a GraphQL-only alias, configure it with `source: :existing_ash_field`.
+          """
+    end
+  end
+
+  defp attribute_field(resource, domain, schema, attribute, name) do
+    field_type =
+      resource
+      |> attribute_output_type(attribute)
+      |> maybe_materialize_field_policy_type(resource, attribute.name)
+
+    %Absinthe.Blueprint.Schema.FieldDefinition{
+      description: attribute.description,
+      identifier: name,
+      module: schema,
+      middleware:
+        middleware_for_field(
+          resource,
+          attribute,
+          attribute.name,
+          attribute.type,
+          attribute.constraints,
+          domain
+        ),
+      name: to_string(name),
+      type: field_type,
+      __reference__: ref(__ENV__)
+    }
+  end
+
+  defp attributes_for_graphql(resource) do
+    if AshGraphql.Resource.Info.fields_configured?(resource) do
+      Ash.Resource.Info.attributes(resource)
     else
-      attributes
+      public_attributes_for_graphql(resource)
     end
   end
 
@@ -5215,12 +5366,26 @@ defmodule AshGraphql.Resource do
     end
   end
 
+  defp aggregates_for_graphql(resource) do
+    if AshGraphql.Resource.Info.fields_configured?(resource) do
+      Ash.Resource.Info.aggregates(resource)
+    else
+      Ash.Resource.Info.public_aggregates(resource)
+    end
+  end
+
+  defp calculations_for_graphql(resource) do
+    if AshGraphql.Resource.Info.fields_configured?(resource) do
+      Ash.Resource.Info.calculations(resource)
+    else
+      Ash.Resource.Info.public_calculations(resource)
+    end
+  end
+
   defp attribute_output_type(resource, attribute, schema) do
     attribute.type
     |> field_type(attribute, resource, false, schema)
-    |> maybe_wrap_non_null(
-      not (nullable_field?(resource, attribute.name) or attribute.allow_nil?)
-    )
+    |> maybe_wrap_non_null(output_field_required?(resource, attribute.name, attribute.allow_nil?))
   end
 
   defp encoded_id(resource, schema, relay_ids?) do
@@ -5331,90 +5496,119 @@ defmodule AshGraphql.Resource do
 
     resource
     |> graphql_relationships()
-    |> Enum.map(fn
-      %{cardinality: :one} = relationship ->
-        name = field_names[relationship.name] || relationship.name
-
-        type = singular_relationship_type(resource, relationship)
-
-        read_action =
-          if relationship.read_action do
-            Ash.Resource.Info.action(relationship.destination, relationship.read_action)
-          else
-            Ash.Resource.Info.primary_action!(relationship.destination, :read)
-          end
-
-        %Absinthe.Blueprint.Schema.FieldDefinition{
-          identifier: relationship.name,
-          module: schema,
-          name: to_string(name),
-          description: relationship.description,
-          arguments:
-            :one_related
-            |> args(relationship.destination, read_action, schema)
-            |> apply_relationship_argument_defaults(relationship),
-          middleware: [
-            {{AshGraphql.Graphql.Resolver, :resolve_assoc_one},
-             {domain, relationship, materialized_singular_relationship?(resource, relationship)}}
-          ],
-          type: type,
-          __reference__: ref(__ENV__)
-        }
-
-      %{cardinality: :many} = relationship ->
-        name = field_names[relationship.name] || relationship.name
-
-        read_action =
-          if relationship.read_action do
-            Ash.Resource.Info.action(relationship.destination, relationship.read_action)
-          else
-            Ash.Resource.Info.primary_action!(relationship.destination, :read)
-          end
-
-        type = AshGraphql.Resource.Info.type(relationship.destination)
-        type_complexity = AshGraphql.Resource.Info.complexity(relationship.destination)
-
-        pagination_strategy =
-          relationship_pagination_strategy(resource, relationship.name, read_action)
-
-        query_type = related_list_type(pagination_strategy, type, resource, relationship)
-
-        %Absinthe.Blueprint.Schema.FieldDefinition{
-          identifier: relationship.name,
-          module: schema,
-          name: to_string(name),
-          description: relationship.description,
-          complexity: type_complexity || {AshGraphql.Graphql.Resolver, :query_complexity},
-          middleware: [
-            {{AshGraphql.Graphql.Resolver, :resolve_assoc_many},
-             {domain, relationship, pagination_strategy}}
-          ],
-          arguments:
-            related_list_args(
-              resource,
-              relationship.destination,
-              relationship.name,
-              read_action,
-              schema
-            )
-            |> apply_relationship_argument_defaults(relationship),
-          type: query_type,
-          __reference__: ref(__ENV__)
-        }
+    |> Enum.map(fn relationship ->
+      relationship_field(
+        resource,
+        domain,
+        schema,
+        relationship,
+        field_names[relationship.name] || relationship.name,
+        relationship.name
+      )
     end)
+  end
+
+  defp relationship_field(
+         resource,
+         domain,
+         schema,
+         %{cardinality: :one} = relationship,
+         name,
+         identifier
+       ) do
+    type = singular_relationship_type(resource, relationship)
+
+    read_action =
+      if relationship.read_action do
+        Ash.Resource.Info.action(relationship.destination, relationship.read_action)
+      else
+        Ash.Resource.Info.primary_action!(relationship.destination, :read)
+      end
+
+    %Absinthe.Blueprint.Schema.FieldDefinition{
+      identifier: identifier,
+      module: schema,
+      name: to_string(name),
+      description: relationship.description,
+      arguments:
+        :one_related
+        |> args(relationship.destination, read_action, schema)
+        |> apply_relationship_argument_defaults(relationship),
+      middleware: [
+        {{AshGraphql.Graphql.Resolver, :resolve_assoc_one},
+         {domain, relationship, materialized_singular_relationship?(resource, relationship)}}
+      ],
+      type: type,
+      __reference__: ref(__ENV__)
+    }
+  end
+
+  defp relationship_field(
+         resource,
+         domain,
+         schema,
+         %{cardinality: :many} = relationship,
+         name,
+         identifier
+       ) do
+    read_action =
+      if relationship.read_action do
+        Ash.Resource.Info.action(relationship.destination, relationship.read_action)
+      else
+        Ash.Resource.Info.primary_action!(relationship.destination, :read)
+      end
+
+    type = AshGraphql.Resource.Info.type(relationship.destination)
+    type_complexity = AshGraphql.Resource.Info.complexity(relationship.destination)
+
+    pagination_strategy =
+      relationship_pagination_strategy(resource, relationship.name, read_action)
+
+    query_type = related_list_type(pagination_strategy, type, resource, relationship)
+
+    %Absinthe.Blueprint.Schema.FieldDefinition{
+      identifier: identifier,
+      module: schema,
+      name: to_string(name),
+      description: relationship.description,
+      complexity: type_complexity || {AshGraphql.Graphql.Resolver, :query_complexity},
+      middleware: [
+        {{AshGraphql.Graphql.Resolver, :resolve_assoc_many},
+         {domain, relationship, pagination_strategy}}
+      ],
+      arguments:
+        related_list_args(
+          resource,
+          relationship.destination,
+          relationship.name,
+          read_action,
+          schema
+        )
+        |> apply_relationship_argument_defaults(relationship),
+      type: query_type,
+      __reference__: ref(__ENV__)
+    }
   end
 
   defp graphql_relationships(resource) do
     relationships = AshGraphql.Resource.Info.relationships(resource)
 
     resource
-    |> Ash.Resource.Info.public_relationships()
+    |> relationships_for_graphql()
     |> Enum.filter(fn relationship ->
       AshGraphql.Resource.Info.show_field?(resource, relationship.name) &&
         Resource in Spark.extensions(relationship.destination) &&
         relationship.name in relationships &&
         AshGraphql.Resource.Info.type(relationship.destination)
     end)
+  end
+
+  defp relationships_for_graphql(resource) do
+    if AshGraphql.Resource.Info.fields_configured?(resource) do
+      Ash.Resource.Info.relationships(resource)
+    else
+      Ash.Resource.Info.public_relationships(resource)
+    end
   end
 
   defp singular_relationship_type(resource, relationship) do
@@ -5427,7 +5621,7 @@ defmodule AshGraphql.Resource do
 
     maybe_wrap_non_null(
       type,
-      not (nullable_field?(resource, relationship.name) or relationship.allow_nil?)
+      output_field_required?(resource, relationship.name, relationship.allow_nil?)
     )
   end
 
@@ -5439,12 +5633,12 @@ defmodule AshGraphql.Resource do
       }
     }
 
-    if nullable_field?(resource, relationship.name) do
-      inner_type
-    else
+    if output_field_required?(resource, relationship.name, false) do
       %Absinthe.Blueprint.TypeReference.NonNull{
         of_type: inner_type
       }
+    else
+      inner_type
     end
   end
 
@@ -5452,12 +5646,12 @@ defmodule AshGraphql.Resource do
   defp related_list_type(:relay, type, resource, relationship) do
     inner_type = String.to_atom("#{type}_connection")
 
-    if nullable_field?(resource, relationship.name) do
-      inner_type
-    else
+    if output_field_required?(resource, relationship.name, false) do
       %Absinthe.Blueprint.TypeReference.NonNull{
         of_type: inner_type
       }
+    else
+      inner_type
     end
   end
 
@@ -5465,12 +5659,12 @@ defmodule AshGraphql.Resource do
   defp related_list_type(:keyset, type, resource, relationship) do
     inner_type = String.to_atom("keyset_page_of_#{type}")
 
-    if nullable_field?(resource, relationship.name) do
-      inner_type
-    else
+    if output_field_required?(resource, relationship.name, false) do
       %Absinthe.Blueprint.TypeReference.NonNull{
         of_type: inner_type
       }
+    else
+      inner_type
     end
   end
 
@@ -5489,8 +5683,32 @@ defmodule AshGraphql.Resource do
 
   @doc false
   def field_policy_field?(resource, field) do
-    field in Ash.Resource.Info.protected_fields(resource)
+    field in Ash.Resource.Info.protected_fields(resource) ||
+      resource
+      |> Ash.Policy.Info.field_policies_for_field(field)
+      |> List.wrap()
+      |> Enum.any?(&non_trivial_field_policy?/1)
   end
+
+  defp non_trivial_field_policy?(%Ash.Policy.FieldPolicy{policies: policies}) do
+    Enum.any?(policies, &non_trivial_field_policy_check?/1)
+  end
+
+  defp non_trivial_field_policy_check?(%Ash.Policy.Check{
+         check: {Ash.Policy.Check.Static, opts},
+         type: :authorize_if
+       }) do
+    opts[:result] != true
+  end
+
+  defp non_trivial_field_policy_check?(%Ash.Policy.Check{
+         check: {Ash.Policy.Check.Static, opts},
+         type: :authorize_unless
+       }) do
+    opts[:result] != false
+  end
+
+  defp non_trivial_field_policy_check?(_), do: true
 
   @doc false
   # sobelow_skip ["DOS.StringToAtom"]
@@ -5557,11 +5775,19 @@ defmodule AshGraphql.Resource do
          field_policy_field?(resource, field))
   end
 
+  defp output_field_required?(resource, field, allow_nil?) do
+    if AshGraphql.Resource.Info.fields_configured?(resource) do
+      AshGraphql.Resource.Info.identity_field?(resource, field)
+    else
+      not (nullable_field?(resource, field) or allow_nil?)
+    end
+  end
+
   defp aggregates(resource, domain, schema) do
     field_names = AshGraphql.Resource.Info.field_names(resource)
 
     resource
-    |> Ash.Resource.Info.public_aggregates()
+    |> aggregates_for_graphql()
     |> Enum.filter(&AshGraphql.Resource.Info.show_field?(resource, &1.name))
     |> Enum.map(fn aggregate ->
       name = field_names[aggregate.name] || aggregate.name
@@ -5586,13 +5812,37 @@ defmodule AshGraphql.Resource do
     end)
   end
 
+  defp aggregate_field(resource, domain, schema, aggregate, name) do
+    type =
+      resource
+      |> aggregate_output_type(aggregate, schema)
+      |> maybe_materialize_field_policy_type(resource, aggregate.name)
+
+    {agg_type, constraints} = aggregate_type_and_constraints(resource, aggregate)
+
+    %Absinthe.Blueprint.Schema.FieldDefinition{
+      identifier: name,
+      module: schema,
+      middleware:
+        middleware_for_field(resource, aggregate, aggregate.name, agg_type, constraints, domain),
+      name: to_string(name),
+      description: aggregate.description,
+      type: type,
+      __reference__: ref(__ENV__)
+    }
+  end
+
   defp aggregate_output_type(resource, aggregate, schema) do
     {field, agg_type, constraints} = aggregate_field_type_and_constraints(resource, aggregate)
     attribute = field || Map.put(aggregate, :constraints, constraints)
 
     nullable? =
-      is_nil(Ash.Query.Aggregate.default_value(aggregate.kind)) ||
-        nullable_field?(resource, attribute.name)
+      if AshGraphql.Resource.Info.fields_configured?(resource) do
+        not AshGraphql.Resource.Info.identity_field?(resource, aggregate.name)
+      else
+        is_nil(Ash.Query.Aggregate.default_value(aggregate.kind)) ||
+          nullable_field?(resource, attribute.name)
+      end
 
     type_resource =
       if nullable? do
@@ -5609,9 +5859,14 @@ defmodule AshGraphql.Resource do
         end
       end
 
-    agg_type
-    |> field_type(attribute, type_resource, false, schema)
-    |> maybe_wrap_non_null(not nullable?)
+    type =
+      if explicit_identity_output_type?(resource, aggregate.name) do
+        :id
+      else
+        field_type(agg_type, attribute, type_resource, false, schema)
+      end
+
+    maybe_wrap_non_null(type, not nullable?)
   end
 
   defp aggregate_type_and_constraints(resource, aggregate) do
@@ -5677,7 +5932,7 @@ defmodule AshGraphql.Resource do
     field_names = AshGraphql.Resource.Info.field_names(resource)
 
     resource
-    |> Ash.Resource.Info.public_calculations()
+    |> calculations_for_graphql()
     |> Enum.filter(&AshGraphql.Resource.Info.show_field?(resource, &1.name))
     |> Enum.map(fn calculation ->
       name = field_names[calculation.name] || calculation.name
@@ -5707,6 +5962,32 @@ defmodule AshGraphql.Resource do
     end)
   end
 
+  defp calculation_field(resource, domain, schema, calculation, name) do
+    field_type = calculation_type(calculation, resource, schema)
+
+    arguments = calculation_args(calculation, resource, schema)
+
+    field_policy_type =
+      if materialized_field_policy_field?(resource, calculation.name) do
+        field_policy_value_type(resource, calculation.name)
+      end
+
+    %Absinthe.Blueprint.Schema.FieldDefinition{
+      identifier: name,
+      module: schema,
+      arguments: arguments,
+      complexity: 2,
+      middleware: [
+        {{AshGraphql.Graphql.Resolver, :resolve_calculation},
+         {domain, resource, calculation, field_policy_type}}
+      ],
+      name: to_string(name),
+      description: calculation.description,
+      type: field_type,
+      __reference__: ref(__ENV__)
+    }
+  end
+
   defp calculation_type(calculation, resource, schema) do
     calculation
     |> calculation_value_type(resource, schema)
@@ -5714,11 +5995,18 @@ defmodule AshGraphql.Resource do
   end
 
   defp calculation_value_type(calculation, resource, schema) do
-    calculation.type
-    |> Ash.Type.get_type()
-    |> field_type(calculation, resource, false, schema)
+    type =
+      if explicit_identity_output_type?(resource, calculation.name) do
+        :id
+      else
+        calculation.type
+        |> Ash.Type.get_type()
+        |> field_type(calculation, resource, false, schema)
+      end
+
+    type
     |> maybe_wrap_non_null(
-      not (nullable_field?(resource, calculation.name) or calculation.allow_nil?)
+      output_field_required?(resource, calculation.name, calculation.allow_nil?)
     )
   end
 
@@ -5769,6 +6057,9 @@ defmodule AshGraphql.Resource do
           override ->
             unwrap_literal_type(override)
 
+          !input? && explicit_identity_output_type?(resource, name) ->
+            :id
+
           schema_default = get_schema_default_type(type, input?, schema) ->
             unwrap_literal_type(schema_default)
 
@@ -5777,11 +6068,28 @@ defmodule AshGraphql.Resource do
         end
 
       _ ->
-        case get_schema_default_type(type, input?, schema) do
-          nil -> do_field_type(type, field, resource, input?, nil, opts)
-          override -> unwrap_literal_type(override)
+        field_name =
+          case field do
+            %{name: name} -> name
+            _ -> nil
+          end
+
+        cond do
+          !input? && explicit_identity_output_type?(resource, field_name) ->
+            :id
+
+          schema_default = get_schema_default_type(type, input?, schema) ->
+            unwrap_literal_type(schema_default)
+
+          true ->
+            do_field_type(type, field, resource, input?, nil, opts)
         end
     end
+  end
+
+  defp explicit_identity_output_type?(resource, field) do
+    AshGraphql.Resource.Info.fields_configured?(resource) &&
+      AshGraphql.Resource.Info.identity_field?(resource, field)
   end
 
   defp do_field_type(type, field, resource, input?, constraints \\ nil, opts \\ [])
@@ -5880,7 +6188,7 @@ defmodule AshGraphql.Resource do
               nil ->
                 if Keyword.get(opts, :warn_unknown?, true) do
                   IO.warn(
-                    "Embedded type #{inspect(type)} cannot define a GraphQL input type because no input fields were produced for its create/update actions (check accept lists, writable? and public? on attributes, and public action arguments). It is still referenced as GraphQL input somewhere; falling back to Application.get_env(:ash_graphql, :json_type) || :json_string."
+                    "Embedded type #{inspect(type)} cannot define a GraphQL input type because no input fields were produced for its create/update actions (check accept lists and writable? on attributes, and public action arguments). It is still referenced as GraphQL input somewhere; falling back to Application.get_env(:ash_graphql, :json_type) || :json_string."
                   )
                 end
 
