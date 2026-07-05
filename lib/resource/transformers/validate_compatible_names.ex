@@ -17,10 +17,7 @@ defmodule AshGraphql.Resource.Transformers.ValidateCompatibleNames do
     resource = Transformer.get_persisted(dsl, :module)
 
     dsl
-    |> Ash.Resource.Info.public_attributes()
-    |> Enum.concat(Ash.Resource.Info.public_aggregates(dsl))
-    |> Enum.concat(Ash.Resource.Info.public_calculations(dsl))
-    |> Enum.concat(Ash.Resource.Info.public_relationships(dsl))
+    |> graphql_fields()
     |> Enum.filter(&AshGraphql.Resource.Info.show_field?(resource, &1.name))
     |> Enum.each(fn field ->
       name = field_names[field.name] || field.name
@@ -48,6 +45,22 @@ defmodule AshGraphql.Resource.Transformers.ValidateCompatibleNames do
     end)
 
     {:ok, dsl}
+  end
+
+  defp graphql_fields(dsl) do
+    if AshGraphql.Resource.Info.fields_configured?(dsl) do
+      dsl
+      |> Ash.Resource.Info.attributes()
+      |> Enum.concat(Ash.Resource.Info.aggregates(dsl))
+      |> Enum.concat(Ash.Resource.Info.calculations(dsl))
+      |> Enum.concat(Ash.Resource.Info.relationships(dsl))
+    else
+      dsl
+      |> Ash.Resource.Info.public_attributes()
+      |> Enum.concat(Ash.Resource.Info.public_aggregates(dsl))
+      |> Enum.concat(Ash.Resource.Info.public_calculations(dsl))
+      |> Enum.concat(Ash.Resource.Info.public_relationships(dsl))
+    end
   end
 
   defp invalid_name?(name) do

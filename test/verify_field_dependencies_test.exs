@@ -72,8 +72,25 @@ defmodule AshGraphql.VerifyFieldDependenciesTest do
     Transformer.set_option(dsl, [:graphql], option, value)
   end
 
+  defp add_graphql_field(dsl, field) do
+    Transformer.add_entity(dsl, [:graphql, :fields], field)
+  end
+
   defp set_authorizers(dsl, authorizers) do
     Transformer.persist(dsl, :authorizers, authorizers)
+  end
+
+  describe "fields exclusivity" do
+    test "raises when relationships is configured with fields" do
+      dsl =
+        dsl_state()
+        |> add_graphql_field(%AshGraphql.Resource.Field{name: :id, identity?: true})
+        |> set_graphql_option(:relationships, [:related1])
+
+      assert_raise Spark.Error.DslError, ~r/fields.*relationships/s, fn ->
+        VerifyFieldDependencies.verify(dsl)
+      end
+    end
   end
 
   describe "show_fields / hide_fields contradiction" do

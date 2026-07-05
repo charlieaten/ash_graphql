@@ -12,10 +12,12 @@ defmodule AshGraphql.Resource.Verifiers.VerifyFieldReferences do
   def verify(dsl) do
     resource = Transformer.get_persisted(dsl, :module)
 
-    attribute_names = dsl |> Ash.Resource.Info.public_attributes() |> MapSet.new(& &1.name)
-    relationship_names = dsl |> Ash.Resource.Info.public_relationships() |> MapSet.new(& &1.name)
-    calculation_names = dsl |> Ash.Resource.Info.public_calculations() |> MapSet.new(& &1.name)
-    aggregate_names = dsl |> Ash.Resource.Info.public_aggregates() |> MapSet.new(& &1.name)
+    field_source = field_source(dsl)
+
+    attribute_names = field_source.attributes |> MapSet.new(& &1.name)
+    relationship_names = field_source.relationships |> MapSet.new(& &1.name)
+    calculation_names = field_source.calculations |> MapSet.new(& &1.name)
+    aggregate_names = field_source.aggregates |> MapSet.new(& &1.name)
 
     all_fields =
       attribute_names
@@ -29,6 +31,8 @@ defmodule AshGraphql.Resource.Verifiers.VerifyFieldReferences do
       |> MapSet.union(aggregate_names)
 
     all_fields_desc = "attribute, relationship, calculation, or aggregate"
+
+    validate_fields(dsl, resource, all_fields, non_relationship_fields)
 
     validate_option(dsl, resource, :show_fields, all_fields, all_fields_desc)
     validate_option(dsl, resource, :hide_fields, all_fields, all_fields_desc)
@@ -48,6 +52,50 @@ defmodule AshGraphql.Resource.Verifiers.VerifyFieldReferences do
     validate_option(dsl, resource, :attribute_input_types, attribute_names, "attribute")
 
     :ok
+  end
+
+  defp field_source(dsl) do
+    if AshGraphql.Resource.Info.fields_configured?(dsl) do
+      %{
+        attributes: Ash.Resource.Info.attributes(dsl),
+        relationships: Ash.Resource.Info.relationships(dsl),
+        calculations: Ash.Resource.Info.calculations(dsl),
+        aggregates: Ash.Resource.Info.aggregates(dsl)
+      }
+    else
+      %{
+        attributes: Ash.Resource.Info.public_attributes(dsl),
+        relationships: Ash.Resource.Info.public_relationships(dsl),
+        calculations: Ash.Resource.Info.public_calculations(dsl),
+        aggregates: Ash.Resource.Info.public_aggregates(dsl)
+      }
+    end
+  end
+
+  defp validate_fields(dsl, resource, all_fields, non_relationship_fields) do
+    dsl
+    |> AshGraphql.Resource.Info.fields()
+    |> Enum.each(fn field ->
+      source = AshGraphql.Resource.Info.field_source(field)
+
+      validate_field_exists(
+        resource,
+        :fields,
+        source,
+        all_fields,
+        "attribute, relationship, calculation, or aggregate"
+      )
+
+      if field.identity? do
+        validate_field_exists(
+          resource,
+          :fields,
+          source,
+          non_relationship_fields,
+          "attribute, calculation, or aggregate"
+        )
+      end
+    end)
   end
 
   defp validate_option(dsl, resource, option, valid_fields, field_type_desc) do
