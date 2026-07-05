@@ -162,6 +162,49 @@ defmodule AshGraphql.Resource.Info do
     Extension.get_opt(resource, [:graphql], :type, nil)
   end
 
+  @doc "The explicit fields configured for the resource's GraphQL type"
+  def fields(resource) do
+    Extension.get_entities(resource, [:graphql, :fields]) || []
+  end
+
+  @doc "Whether explicit GraphQL fields are configured"
+  def fields_configured?(resource) do
+    fields(resource) != []
+  end
+
+  @doc "The Ash field used as the source for a configured GraphQL field"
+  def field_source(%{source: nil, name: name}), do: name
+  def field_source(%{source: source}), do: source
+
+  @doc "The Ash field used as the source for a configured GraphQL field name"
+  def field_source(resource, field) do
+    if fields_configured?(resource) do
+      resource
+      |> fields()
+      |> Enum.find(&(&1.name == field))
+      |> case do
+        nil -> field
+        configured_field -> field_source(configured_field)
+      end
+    else
+      field
+    end
+  end
+
+  @doc "The source fields configured for the resource's GraphQL type"
+  def field_sources(resource) do
+    resource
+    |> fields()
+    |> Enum.map(&field_source/1)
+  end
+
+  @doc "Whether the field is configured as a GraphQL identity field"
+  def identity_field?(resource, field) do
+    resource
+    |> fields()
+    |> Enum.any?(&(&1.identity? && field_source(&1) == field))
+  end
+
   @doc "Wether or not to derive a filter input for the resource automatically"
   def derive_filter?(resource) do
     Extension.get_opt(resource, [:graphql], :derive_filter?, true)
@@ -179,7 +222,15 @@ defmodule AshGraphql.Resource.Info do
 
   @doc "Graphql nullability overrides for the resource"
   def nullable_fields(resource) do
-    Extension.get_opt(resource, [:graphql], :nullable_fields, [])
+    case fields(resource) do
+      [] ->
+        Extension.get_opt(resource, [:graphql], :nullable_fields, [])
+
+      fields ->
+        fields
+        |> Enum.reject(& &1.identity?)
+        |> Enum.map(&field_source/1)
+    end
   end
 
   @doc "How GraphQL should expose forbidden field values"
@@ -198,7 +249,13 @@ defmodule AshGraphql.Resource.Info do
 
   @doc "Graphql field name (attribute/relationship/calculation/arguments) overrides for the resource"
   def field_names(resource) do
-    Extension.get_opt(resource, [:graphql], :field_names, [])
+    case fields(resource) do
+      [] ->
+        Extension.get_opt(resource, [:graphql], :field_names, [])
+
+      fields ->
+        Enum.map(fields, &{field_source(&1), &1.name})
+    end
   end
 
   @doc "Fields to hide from the graphql domain"
@@ -213,16 +270,24 @@ defmodule AshGraphql.Resource.Info do
 
   @doc "Wether or not a given field will be shown"
   def show_field?(resource, field) do
-    hide_fields = hide_fields(resource)
-    show_fields = show_fields(resource) || [field]
+    if fields_configured?(resource) do
+      field in field_sources(resource)
+    else
+      hide_fields = hide_fields(resource)
+      show_fields = show_fields(resource) || [field]
 
-    field not in hide_fields and field in show_fields
+      field not in hide_fields and field in show_fields
+    end
   end
 
   @doc "Which relationships should be included in the generated type"
   def relationships(resource) do
-    Extension.get_opt(resource, [:graphql], :relationships, nil) ||
-      resource |> Ash.Resource.Info.public_relationships() |> Enum.map(& &1.name)
+    if fields_configured?(resource) do
+      field_sources(resource)
+    else
+      Extension.get_opt(resource, [:graphql], :relationships, nil) ||
+        resource |> Ash.Resource.Info.public_relationships() |> Enum.map(& &1.name)
+    end
   end
 
   @doc "Pagination configuration for list relationships"

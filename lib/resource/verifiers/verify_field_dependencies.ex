@@ -9,18 +9,24 @@ defmodule AshGraphql.Resource.Verifiers.VerifyFieldDependencies do
   @moduledoc false
   use Spark.Dsl.Verifier
 
+  alias Spark.Dsl.Extension
   alias Spark.Dsl.Transformer
 
   @impl true
   def verify(dsl) do
     resource = Transformer.get_persisted(dsl, :module)
+    fields = AshGraphql.Resource.Info.fields(dsl)
     show_fields = AshGraphql.Resource.Info.show_fields(dsl)
     hide_fields = AshGraphql.Resource.Info.hide_fields(dsl)
+
+    validate_fields_configuration!(resource, dsl, fields)
 
     # Hard error: show_fields and hide_fields must not overlap
     validate_show_hide_contradiction!(resource, show_fields, hide_fields)
 
-    has_visibility_constraints = not (is_nil(show_fields) and is_nil(hide_fields))
+    has_visibility_constraints =
+      fields == [] and not (is_nil(show_fields) and Enum.empty?(hide_fields || []))
+
     explicit_relationships = Spark.Dsl.Extension.get_opt(dsl, [:graphql], :relationships, nil)
 
     warnings =
@@ -76,6 +82,59 @@ defmodule AshGraphql.Resource.Verifiers.VerifyFieldDependencies do
     case warnings do
       [] -> :ok
       list -> {:warn, list}
+    end
+  end
+
+  defp validate_fields_configuration!(_resource, _dsl, []), do: :ok
+
+  defp validate_fields_configuration!(resource, dsl, fields) do
+    validate_fields_exclusive!(resource, dsl)
+    validate_unique_fields!(resource, fields, :name, "GraphQL field names", & &1.name)
+  end
+
+  defp validate_fields_exclusive!(resource, dsl) do
+    conflicts =
+      [:show_fields, :hide_fields, :relationships, :field_names, :nullable_fields]
+      |> Enum.filter(&configured?(dsl, &1))
+
+    unless Enum.empty?(conflicts) do
+      raise Spark.Error.DslError,
+        module: resource,
+        path: [:graphql, :fields],
+        message: """
+        The `fields` block is exclusive and cannot be combined with #{inspect(conflicts)}.
+
+        Use `field`, `field source:`, and `identity` entries inside `fields` instead.
+        """
+    end
+  end
+
+  defp configured?(dsl, option) do
+    case Extension.get_opt(dsl, [:graphql], option, nil) do
+      nil -> false
+      [] -> true
+      _ -> true
+    end
+  end
+
+  defp validate_unique_fields!(resource, fields, path, label, value_fun) do
+    duplicates =
+      fields
+      |> Enum.map(value_fun)
+      |> Enum.frequencies()
+      |> Enum.filter(fn {_value, count} -> count > 1 end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.sort()
+
+    unless Enum.empty?(duplicates) do
+      raise Spark.Error.DslError,
+        module: resource,
+        path: [:graphql, :fields, path],
+        message: """
+        Duplicate #{label} are not allowed in `fields`.
+
+        Duplicates: #{inspect(duplicates)}
+        """
     end
   end
 
