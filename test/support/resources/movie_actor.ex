@@ -10,7 +10,17 @@ defmodule AshGraphql.Test.MovieActor do
     data_layer: Ash.DataLayer.Ets
 
   actions do
-    defaults([:create, :update, :destroy, :read])
+    defaults([:update, :destroy, :read])
+
+    create :create do
+      primary?(true)
+      accept([:movie_id, :actor_id, :position, :distance_meters])
+    end
+  end
+
+  attributes do
+    attribute(:position, :integer, public?: false)
+    attribute(:distance_meters, :integer, public?: false)
   end
 
   relationships do
