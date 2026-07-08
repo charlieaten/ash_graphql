@@ -1549,6 +1549,10 @@ defmodule AshGraphql.Graphql.Resolver do
     }
   end
 
+  defp paginate_relationship(page, %{strategy: strategy}) do
+    paginate_relationship(page, strategy)
+  end
+
   defp paginate_relationship(%Ash.Page.Keyset{} = keyset, strategy) do
     relay? = strategy == :relay
     paginate_with_keyset(keyset, relay?)
@@ -1571,6 +1575,120 @@ defmodule AshGraphql.Graphql.Resolver do
 
   defp paginate_relationship(page, _) do
     {:ok, page}
+  end
+
+  defp add_relationship_edge_fields(
+         {:ok, %{edges: edges} = page},
+         parent,
+         %Ash.Resource.Relationships.ManyToMany{} = relationship,
+         %{strategy: :relay, edge: %{fields: fields}} = pagination_config,
+         resolution,
+         domain
+       )
+       when fields != [] do
+    case load_edge_join_rows(edges, parent, relationship, pagination_config, resolution, domain) do
+      {:ok, join_rows} ->
+        edges =
+          Enum.map(edges, fn %{node: node} = edge ->
+            destination_value = Map.get(node, relationship.destination_attribute)
+
+            Map.put(edge, :__join_row__, Map.get(join_rows, destination_value))
+          end)
+
+        {:ok, %{page | edges: edges}}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp add_relationship_edge_fields(
+         result,
+         _parent,
+         _relationship,
+         _pagination_config,
+         _resolution,
+         _domain
+       ) do
+    result
+  end
+
+  defp load_edge_join_rows([], _parent, _relationship, _pagination_config, _resolution, _domain) do
+    {:ok, %{}}
+  end
+
+  defp load_edge_join_rows(edges, parent, relationship, pagination_config, resolution, domain) do
+    source_value = Map.get(parent, relationship.source_attribute)
+
+    destination_values =
+      edges
+      |> Enum.map(fn edge -> Map.get(edge.node, relationship.destination_attribute) end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    if is_nil(source_value) or destination_values == [] do
+      {:ok, %{}}
+    else
+      context = resolution.context
+
+      load_opts = [
+        domain: domain,
+        tenant: Map.get(context, :tenant),
+        authorize?: AshGraphql.Domain.Info.authorize?(domain),
+        tracer: AshGraphql.Domain.Info.tracer(domain),
+        actor: Map.get(context, :actor)
+      ]
+
+      edge_type =
+        AshGraphql.Resource.relationship_edge_type(
+          relationship.source,
+          relationship,
+          pagination_config
+        )
+
+      query =
+        relationship.through
+        |> Ash.Query.new()
+        |> Ash.Query.set_tenant(Map.get(context, :tenant))
+        |> Ash.Query.set_context(get_context(context))
+        |> Ash.Query.filter(
+          ^ref(relationship.source_attribute_on_join_resource) == ^source_value and
+            ^ref(relationship.destination_attribute_on_join_resource) in ^destination_values
+        )
+        |> select_fields(relationship.through, resolution, edge_type, ["edges"])
+        |> Ash.Query.ensure_selected([
+          relationship.source_attribute_on_join_resource,
+          relationship.destination_attribute_on_join_resource
+        ])
+        |> load_fields(
+          load_opts,
+          relationship.through,
+          resolution,
+          resolution.path,
+          context,
+          edge_type,
+          ["edges"]
+        )
+
+      opts = [
+        actor: Map.get(context, :actor),
+        authorize?: AshGraphql.Domain.Info.authorize?(domain),
+        domain: domain,
+        tenant: Map.get(context, :tenant),
+        tracer: AshGraphql.Domain.Info.tracer(domain)
+      ]
+
+      case Ash.read(query, opts) do
+        {:ok, join_rows} ->
+          {:ok,
+           Map.new(join_rows, fn join_row ->
+             {Map.get(join_row, relationship.destination_attribute_on_join_resource), join_row}
+           end)}
+
+        {:error, error} ->
+          {:error, error}
+      end
+    end
   end
 
   def mutate(%Absinthe.Resolution{state: :resolved} = resolution, _),
@@ -2210,6 +2328,18 @@ defmodule AshGraphql.Graphql.Resolver do
     end
   end
 
+  defp maybe_select_join_destination_attribute(
+         query,
+         %Ash.Resource.Relationships.ManyToMany{} = relationship,
+         %{strategy: :relay, edge: %{fields: fields}}
+       )
+       when fields != [] do
+    Ash.Query.ensure_selected(query, relationship.destination_attribute)
+  end
+
+  defp maybe_select_join_destination_attribute(query, _relationship, _pagination_config),
+    do: query
+
   defp mutation_selection(resource, _mutation, :top_level) do
     {AshGraphql.Resource.Info.type(resource), []}
   end
@@ -2508,13 +2638,14 @@ defmodule AshGraphql.Graphql.Resolver do
             |> Ash.Query.set_tenant(Map.get(context, :tenant))
             |> Ash.Query.set_context(get_context(context))
 
-          pagination_strategy =
-            AshGraphql.Resource.relationship_pagination_strategy(
+          pagination_config =
+            AshGraphql.Resource.relationship_pagination_config(
               resource,
               relationship.name,
               read_action
             )
 
+          pagination_strategy = pagination_config.strategy
           will_paginate? = pagination_strategy != nil
           relay? = pagination_strategy == :relay
           result_fields = get_result_fields(pagination_strategy, relay?)
@@ -2567,6 +2698,7 @@ defmodule AshGraphql.Graphql.Resolver do
               nil,
               result_fields
             )
+            |> maybe_select_join_destination_attribute(relationship, pagination_config)
 
           if selection.alias do
             {type, constraints} =
@@ -3357,7 +3489,7 @@ defmodule AshGraphql.Graphql.Resolver do
 
   def resolve_assoc_many(
         %{source: parent} = resolution,
-        {_domain, relationship, pagination_strategy}
+        {domain, relationship, pagination_config}
       ) do
     page =
       if resolution.definition.alias do
@@ -3366,10 +3498,80 @@ defmodule AshGraphql.Graphql.Resolver do
         Map.get(parent, relationship.name)
       end
 
-    result = paginate_relationship(page, pagination_strategy)
+    result =
+      page
+      |> paginate_relationship(pagination_config)
+      |> add_relationship_edge_fields(parent, relationship, pagination_config, resolution, domain)
 
     Absinthe.Resolution.put_result(resolution, result)
   end
+
+  def resolve_edge_join_field(%Absinthe.Resolution{state: :resolved} = resolution, _),
+    do: resolution
+
+  def resolve_edge_join_field(
+        %{source: %{__join_row__: join_row}} = resolution,
+        {field, kind, type, constraints, _domain}
+      ) do
+    value =
+      case {kind, resolution.definition.alias} do
+        {:calculation, alias} when not is_nil(alias) ->
+          Map.get(join_row.calculations, {:__ash_graphql_calculation__, alias})
+
+        {:calculation, _} ->
+          case Ash.Resource.Info.calculation(join_row.__struct__, field) do
+            %{field?: false} -> Map.get(join_row.calculations, field)
+            _ -> Map.get(join_row, field)
+          end
+
+        {:aggregate, _} ->
+          Map.get(join_row.aggregates, field) || Map.get(join_row, field)
+
+        {:attribute, alias} when not is_nil(alias) ->
+          if Ash.Type.can_load?(type, constraints) do
+            Map.get(join_row.calculations, {:__ash_graphql_attribute__, alias})
+          else
+            Map.get(join_row, field)
+          end
+
+        _ ->
+          Map.get(join_row, field)
+      end
+
+    Absinthe.Resolution.put_result(resolution, {:ok, value})
+  end
+
+  def resolve_edge_join_field(resolution, _),
+    do: Absinthe.Resolution.put_result(resolution, {:ok, nil})
+
+  def resolve_edge_join_relationship(%Absinthe.Resolution{state: :resolved} = resolution, _),
+    do: resolution
+
+  def resolve_edge_join_relationship(
+        %{source: %{__join_row__: join_row}} = resolution,
+        {relationship, pagination_config}
+      ) do
+    value =
+      if resolution.definition.alias do
+        Map.get(
+          join_row.calculations,
+          {:__ash_graphql_relationship__, resolution.definition.alias}
+        )
+      else
+        Map.get(join_row, relationship.name)
+      end
+
+    result =
+      case relationship.cardinality do
+        :many -> paginate_relationship(value, pagination_config)
+        :one -> {:ok, value}
+      end
+
+    Absinthe.Resolution.put_result(resolution, result)
+  end
+
+  def resolve_edge_join_relationship(resolution, _),
+    do: Absinthe.Resolution.put_result(resolution, {:ok, nil})
 
   def resolve_id(%Absinthe.Resolution{state: :resolved} = resolution, _),
     do: resolution

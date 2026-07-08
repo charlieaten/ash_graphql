@@ -543,8 +543,25 @@ defmodule AshGraphql.Resource do
       paginate_relationship_with: [
         type: :keyword_list,
         default: [],
-        doc:
-          "A keyword list indicating which kind of pagination should be used for each `has_many` and `many_to_many` relationships, e.g. `related_things: :keyset, other_related_things: :offset`. Valid pagination values are `nil`, `:none`, `:offset`, `:keyset` and `:relay`."
+        doc: """
+        A keyword list indicating which kind of pagination should be used for each `has_many` and
+        `many_to_many` relationship, e.g. `related_things: :keyset, other_related_things: :offset`.
+        Valid pagination values are `nil`, `:none`, `:offset`, `:keyset` and `:relay`.
+
+        Relay relationships may also use keyword configuration. For `many_to_many` relationships,
+        `edge: [fields: fields]` exposes the listed fields from the join resource on the relay edge.
+        Fields may be attributes, aggregates, calculations, or relationships on the join resource,
+        regardless of whether they are public. Edge fields are nullable by default.
+
+            paginate_relationship_with related_things: [
+              strategy: :relay,
+              name: :related_things_connection,
+              edge: [
+                name: :related_things_edge,
+                fields: [:position, :distance_meters]
+              ]
+            ]
+        """
       ],
       field_names: [
         type: :keyword_list,
@@ -2245,10 +2262,41 @@ defmodule AshGraphql.Resource do
 
   @doc false
   def relationship_pagination_strategy(resource, relationship_name, action) do
+    relationship_pagination_config(resource, relationship_name, action).strategy
+  end
+
+  @doc false
+  def relationship_pagination_config(resource, relationship_name, action) do
     resource
     |> AshGraphql.Resource.Info.paginate_relationship_with()
     |> Keyword.get(relationship_name)
-    |> pagination_strategy(action, true)
+    |> normalize_relationship_pagination_config(action)
+  end
+
+  defp normalize_relationship_pagination_config(config, action) when is_list(config) do
+    strategy =
+      config
+      |> Keyword.get(:strategy)
+      |> pagination_strategy(action, true)
+
+    edge_config = Keyword.get(config, :edge, []) || []
+
+    %{
+      strategy: strategy,
+      name: Keyword.get(config, :name) || Keyword.get(config, :type_name),
+      edge: %{
+        name: Keyword.get(edge_config, :name) || Keyword.get(edge_config, :type_name),
+        fields: Keyword.get(edge_config, :fields, [])
+      }
+    }
+  end
+
+  defp normalize_relationship_pagination_config(strategy, action) do
+    %{
+      strategy: pagination_strategy(strategy, action, true),
+      name: nil,
+      edge: %{name: nil, fields: []}
+    }
   end
 
   defp pagination_strategy(strategy, action, allow_relay? \\ false)
@@ -2315,6 +2363,9 @@ defmodule AshGraphql.Resource do
   end
 
   defp maybe_wrap_non_null(type, _), do: type
+
+  defp nullable_type(%Absinthe.Blueprint.TypeReference.NonNull{of_type: type}), do: type
+  defp nullable_type(type), do: type
 
   defp get_fields(resource, schema) do
     if AshGraphql.Resource.Info.encode_primary_key?(resource) do
@@ -2741,6 +2792,7 @@ defmodule AshGraphql.Resource do
       List.wrap(filter_input(resource, schema)) ++
       filter_field_types(resource, schema) ++
       List.wrap(page_type_definitions(resource, schema)) ++
+      relationship_page_type_definitions(resource, domain, schema) ++
       enum_definitions(resource, schema, __ENV__)
   end
 
@@ -3418,7 +3470,7 @@ defmodule AshGraphql.Resource do
 
   defp filter_attribute_types(resource, schema) do
     resource
-    |> attributes_for_graphql()
+    |> input_attributes_for_graphql()
     |> Enum.filter(
       &(AshGraphql.Resource.Info.show_field?(resource, &1.name) && filterable?(&1, resource))
     )
@@ -3924,7 +3976,7 @@ defmodule AshGraphql.Resource do
     field_names = AshGraphql.Resource.Info.field_names(resource)
 
     resource
-    |> attributes_for_graphql()
+    |> input_attributes_for_graphql()
     |> Enum.filter(&(filterable_and_shown_field?(resource, &1) && filterable?(&1, resource)))
     |> Enum.flat_map(fn attribute ->
       [
@@ -4789,7 +4841,7 @@ defmodule AshGraphql.Resource do
     field_names = AshGraphql.Resource.Info.field_names(resource)
 
     resource
-    |> attributes_for_graphql()
+    |> input_attributes_for_graphql()
     |> Enum.concat(calculations_for_graphql(resource))
     |> Enum.concat(aggregates_for_graphql(resource))
     |> Enum.filter(
@@ -5032,6 +5084,233 @@ defmodule AshGraphql.Resource do
       nil
     end
   end
+
+  defp relationship_page_type_definitions(resource, domain, schema) do
+    resource
+    |> graphql_relationships()
+    |> Enum.filter(&(&1.cardinality == :many))
+    |> Enum.flat_map(fn relationship ->
+      read_action = relationship_read_action(relationship)
+      config = relationship_pagination_config(resource, relationship.name, read_action)
+
+      if relationship_specific_relay_type?(config) do
+        relationship_relay_page(
+          resource,
+          relationship,
+          domain,
+          schema,
+          read_action.pagination && read_action.pagination.countable,
+          config
+        )
+      else
+        []
+      end
+    end)
+  end
+
+  defp relationship_read_action(relationship) do
+    if relationship.read_action do
+      Ash.Resource.Info.action(relationship.destination, relationship.read_action)
+    else
+      Ash.Resource.Info.primary_action!(relationship.destination, :read)
+    end
+  end
+
+  defp relationship_relay_page(resource, relationship, domain, schema, countable?, config) do
+    node_type = AshGraphql.Resource.Info.type(relationship.destination)
+    edge_type = relationship_edge_type(resource, relationship, config)
+    connection_type = relationship_connection_type(resource, relationship, config)
+
+    [
+      %Absinthe.Blueprint.Schema.ObjectTypeDefinition{
+        description: "#{inspect(resource)}.#{relationship.name} edge",
+        fields:
+          [
+            %Absinthe.Blueprint.Schema.FieldDefinition{
+              description: "Cursor",
+              identifier: :cursor,
+              module: schema,
+              name: "cursor",
+              __reference__: ref(__ENV__),
+              type: %Absinthe.Blueprint.TypeReference.NonNull{
+                of_type: :string
+              }
+            },
+            %Absinthe.Blueprint.Schema.FieldDefinition{
+              description: "#{inspect(relationship.destination)} node",
+              identifier: :node,
+              module: schema,
+              name: "node",
+              __reference__: ref(__ENV__),
+              type: %Absinthe.Blueprint.TypeReference.NonNull{
+                of_type: node_type
+              }
+            }
+          ] ++ relationship_edge_field_definitions(relationship, domain, schema, config),
+        identifier: edge_type,
+        module: schema,
+        name: edge_type |> to_string() |> Macro.camelize(),
+        __reference__: ref(__ENV__)
+      },
+      %Absinthe.Blueprint.Schema.ObjectTypeDefinition{
+        description: "#{inspect(resource)}.#{relationship.name} connection",
+        fields:
+          [
+            %Absinthe.Blueprint.Schema.FieldDefinition{
+              description: "Page information",
+              identifier: :page_info,
+              module: schema,
+              name: "page_info",
+              __reference__: ref(__ENV__),
+              type: %Absinthe.Blueprint.TypeReference.NonNull{
+                of_type: :page_info
+              }
+            },
+            %Absinthe.Blueprint.Schema.FieldDefinition{
+              description: "#{inspect(resource)}.#{relationship.name} edges",
+              identifier: :edges,
+              module: schema,
+              name: "edges",
+              __reference__: ref(__ENV__),
+              type: %Absinthe.Blueprint.TypeReference.List{
+                of_type: %Absinthe.Blueprint.TypeReference.NonNull{
+                  of_type: edge_type
+                }
+              }
+            }
+          ]
+          |> add_count_to_page(schema, countable?),
+        identifier: connection_type,
+        module: schema,
+        name: connection_type |> to_string() |> Macro.camelize(),
+        __reference__: ref(__ENV__)
+      }
+    ]
+  end
+
+  defp relationship_edge_field_definitions(relationship, domain, schema, config) do
+    Enum.map(config.edge.fields, fn field ->
+      relationship_edge_field_definition(
+        relationship.through,
+        domain,
+        schema,
+        edge_field_source(field),
+        edge_field_name(field)
+      )
+    end)
+  end
+
+  defp relationship_edge_field_definition(resource, domain, schema, source, name) do
+    cond do
+      attribute = Ash.Resource.Info.attribute(resource, source) ->
+        %Absinthe.Blueprint.Schema.FieldDefinition{
+          identifier: source,
+          module: schema,
+          middleware: [
+            {{AshGraphql.Graphql.Resolver, :resolve_edge_join_field},
+             {source, :attribute, attribute.type, attribute.constraints, domain}}
+          ],
+          name: to_string(name),
+          description: attribute.description,
+          type:
+            attribute.type
+            |> field_type(attribute, resource, false, schema)
+            |> nullable_type(),
+          __reference__: ref(__ENV__)
+        }
+
+      aggregate = Ash.Resource.Info.aggregate(resource, source) ->
+        {aggregate_type, constraints} = aggregate_type_and_constraints(resource, aggregate)
+
+        %Absinthe.Blueprint.Schema.FieldDefinition{
+          identifier: source,
+          module: schema,
+          middleware: [
+            {{AshGraphql.Graphql.Resolver, :resolve_edge_join_field},
+             {source, :aggregate, aggregate_type, constraints, domain}}
+          ],
+          name: to_string(name),
+          description: aggregate.description,
+          type:
+            resource
+            |> aggregate_output_type(aggregate, schema)
+            |> nullable_type(),
+          __reference__: ref(__ENV__)
+        }
+
+      calculation = Ash.Resource.Info.calculation(resource, source) ->
+        %Absinthe.Blueprint.Schema.FieldDefinition{
+          identifier: source,
+          module: schema,
+          arguments: calculation_args(calculation, resource, schema),
+          complexity: 2,
+          middleware: [
+            {{AshGraphql.Graphql.Resolver, :resolve_edge_join_field},
+             {source, :calculation, calculation.type, calculation.constraints, domain}}
+          ],
+          name: to_string(name),
+          description: calculation.description,
+          type:
+            calculation
+            |> calculation_value_type(resource, schema)
+            |> nullable_type(),
+          __reference__: ref(__ENV__)
+        }
+
+      relationship = Ash.Resource.Info.relationship(resource, source) ->
+        relationship_edge_relationship_field(resource, domain, schema, relationship, name)
+    end
+  end
+
+  defp relationship_edge_relationship_field(resource, _domain, schema, relationship, name) do
+    read_action = relationship_read_action(relationship)
+    pagination_config = relationship_pagination_config(resource, relationship.name, read_action)
+
+    {type, arguments} =
+      case relationship.cardinality do
+        :one ->
+          {resource |> singular_relationship_type(relationship) |> nullable_type(),
+           args(:one_related, relationship.destination, read_action, schema)}
+
+        :many ->
+          type = AshGraphql.Resource.Info.type(relationship.destination)
+
+          {pagination_config
+           |> related_list_type(type, resource, relationship)
+           |> nullable_type(),
+           related_list_args(
+             resource,
+             relationship.destination,
+             relationship.name,
+             read_action,
+             schema
+           )}
+      end
+
+    %Absinthe.Blueprint.Schema.FieldDefinition{
+      identifier: relationship.name,
+      module: schema,
+      middleware: [
+        {{AshGraphql.Graphql.Resolver, :resolve_edge_join_relationship},
+         {relationship, pagination_config}}
+      ],
+      name: to_string(name),
+      description: relationship.description,
+      arguments: arguments,
+      type: type,
+      __reference__: ref(__ENV__)
+    }
+  end
+
+  defp edge_field_source({field, _opts}) when is_atom(field), do: field
+  defp edge_field_source(field), do: field
+
+  defp edge_field_name({field, opts}) when is_atom(field) and is_list(opts) do
+    Keyword.get(opts, :name, field)
+  end
+
+  defp edge_field_name({field, name}) when is_atom(field) and is_atom(name), do: name
+  defp edge_field_name(field), do: field
 
   def node_type?(type) do
     type.identifier == :node
@@ -5326,7 +5605,7 @@ defmodule AshGraphql.Resource do
   defp attribute_field(resource, domain, schema, attribute, name) do
     field_type =
       resource
-      |> attribute_output_type(attribute)
+      |> attribute_output_type(attribute, schema)
       |> maybe_materialize_field_policy_type(resource, attribute.name)
 
     %Absinthe.Blueprint.Schema.FieldDefinition{
@@ -5353,6 +5632,14 @@ defmodule AshGraphql.Resource do
       Ash.Resource.Info.attributes(resource)
     else
       public_attributes_for_graphql(resource)
+    end
+  end
+
+  defp input_attributes_for_graphql(resource) do
+    if AshGraphql.Resource.Info.fields_configured?(resource) do
+      Ash.Resource.Info.attributes(resource)
+    else
+      Ash.Resource.Info.public_attributes(resource)
     end
   end
 
@@ -5561,10 +5848,10 @@ defmodule AshGraphql.Resource do
     type = AshGraphql.Resource.Info.type(relationship.destination)
     type_complexity = AshGraphql.Resource.Info.complexity(relationship.destination)
 
-    pagination_strategy =
-      relationship_pagination_strategy(resource, relationship.name, read_action)
+    pagination_config =
+      relationship_pagination_config(resource, relationship.name, read_action)
 
-    query_type = related_list_type(pagination_strategy, type, resource, relationship)
+    query_type = related_list_type(pagination_config, type, resource, relationship)
 
     %Absinthe.Blueprint.Schema.FieldDefinition{
       identifier: identifier,
@@ -5574,7 +5861,7 @@ defmodule AshGraphql.Resource do
       complexity: type_complexity || {AshGraphql.Graphql.Resolver, :query_complexity},
       middleware: [
         {{AshGraphql.Graphql.Resolver, :resolve_assoc_many},
-         {domain, relationship, pagination_strategy}}
+         {domain, relationship, pagination_config}}
       ],
       arguments:
         related_list_args(
@@ -5625,7 +5912,11 @@ defmodule AshGraphql.Resource do
     )
   end
 
-  defp related_list_type(value, type, resource, relationship)
+  defp related_list_type(%{strategy: strategy} = config, type, resource, relationship) do
+    related_list_type(strategy, type, resource, relationship, config)
+  end
+
+  defp related_list_type(value, type, resource, relationship, _config)
        when is_nil(value) or value == :none do
     inner_type = %Absinthe.Blueprint.TypeReference.List{
       of_type: %Absinthe.Blueprint.TypeReference.NonNull{
@@ -5643,8 +5934,13 @@ defmodule AshGraphql.Resource do
   end
 
   # sobelow_skip ["DOS.StringToAtom"]
-  defp related_list_type(:relay, type, resource, relationship) do
-    inner_type = String.to_atom("#{type}_connection")
+  defp related_list_type(:relay, type, resource, relationship, config) do
+    inner_type =
+      if relationship_specific_relay_type?(config) do
+        relationship_connection_type(resource, relationship, config)
+      else
+        String.to_atom("#{type}_connection")
+      end
 
     if output_field_required?(resource, relationship.name, false) do
       %Absinthe.Blueprint.TypeReference.NonNull{
@@ -5656,7 +5952,7 @@ defmodule AshGraphql.Resource do
   end
 
   # sobelow_skip ["DOS.StringToAtom"]
-  defp related_list_type(:keyset, type, resource, relationship) do
+  defp related_list_type(:keyset, type, resource, relationship, _config) do
     inner_type = String.to_atom("keyset_page_of_#{type}")
 
     if output_field_required?(resource, relationship.name, false) do
@@ -5669,7 +5965,7 @@ defmodule AshGraphql.Resource do
   end
 
   # sobelow_skip ["DOS.StringToAtom"]
-  defp related_list_type(:offset, type, resource, relationship) do
+  defp related_list_type(:offset, type, resource, relationship, _config) do
     inner_type = String.to_atom("page_of_#{type}")
 
     if nullable_field?(resource, relationship.name) do
@@ -5679,6 +5975,32 @@ defmodule AshGraphql.Resource do
         of_type: inner_type
       }
     end
+  end
+
+  defp relationship_specific_relay_type?(%{strategy: :relay, name: name, edge: edge}) do
+    not is_nil(name) or not is_nil(edge.name) or edge.fields != []
+  end
+
+  defp relationship_specific_relay_type?(_), do: false
+
+  # sobelow_skip ["DOS.StringToAtom"]
+  @doc false
+  def relationship_connection_type(resource, relationship, config) do
+    config.name ||
+      String.to_atom("#{relationship_type_prefix(resource, relationship)}_connection")
+  end
+
+  # sobelow_skip ["DOS.StringToAtom"]
+  @doc false
+  def relationship_edge_type(resource, relationship, config) do
+    config.edge.name || String.to_atom("#{relationship_type_prefix(resource, relationship)}_edge")
+  end
+
+  defp relationship_type_prefix(resource, relationship) do
+    field_names = AshGraphql.Resource.Info.field_names(resource)
+    resource_type = AshGraphql.Resource.Info.type(resource)
+
+    "#{resource_type}_#{field_names[relationship.name] || relationship.name}"
   end
 
   @doc false
