@@ -13,7 +13,18 @@ defmodule AshGraphql.Test.Movie do
   graphql do
     type(:movie)
 
-    paginate_relationship_with(actors: :relay, reviews: :offset, awards: :keyset)
+    paginate_relationship_with(
+      actors: [
+        strategy: :relay,
+        name: :movie_actors_connection,
+        edge: [
+          name: :movie_actors_edge,
+          fields: [:position, :distance_meters, :movie]
+        ]
+      ],
+      reviews: :offset,
+      awards: :keyset
+    )
 
     queries do
       get :get_movie, :read do

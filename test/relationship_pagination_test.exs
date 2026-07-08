@@ -96,6 +96,93 @@ defmodule AshGraphql.RelationshipPaginationTest do
     assert [%{"node" => %{"name" => "Actor 2"}} | _] = edges
   end
 
+  test "relay strategy exposes configured many_to_many join fields on edges" do
+    movie =
+      AshGraphql.Test.Movie
+      |> Ash.Changeset.for_create(:create, title: "Foo")
+      |> Ash.create!()
+
+    for i <- 1..3 do
+      actor =
+        AshGraphql.Test.Actor
+        |> Ash.Changeset.for_create(:create, name: "Actor #{i}")
+        |> Ash.create!()
+
+      AshGraphql.Test.MovieActor
+      |> Ash.Changeset.for_create(:create,
+        movie_id: movie.id,
+        actor_id: actor.id,
+        position: i,
+        distance_meters: i * 100
+      )
+      |> Ash.create!()
+    end
+
+    document =
+      """
+      query Movies {
+        getMovies {
+          actors(first: 2, sort: [{field: NAME}]) {
+            edges {
+              position
+              distanceMeters
+              movie {
+                title
+              }
+              node {
+                name
+              }
+            }
+          }
+        }
+
+        __type(name: "MovieActorsEdge") {
+          fields {
+            name
+            type {
+              kind
+              name
+            }
+          }
+        }
+      }
+      """
+
+    assert {:ok, result} = Absinthe.run(document, AshGraphql.Test.Schema)
+    refute Map.has_key?(result, :errors)
+
+    assert %{
+             data: %{
+               "getMovies" => [
+                 %{
+                   "actors" => %{
+                     "edges" => [
+                       %{
+                         "position" => 1,
+                         "distanceMeters" => 100,
+                         "movie" => %{"title" => "Foo"},
+                         "node" => %{"name" => "Actor 1"}
+                       },
+                       %{
+                         "position" => 2,
+                         "distanceMeters" => 200,
+                         "movie" => %{"title" => "Foo"},
+                         "node" => %{"name" => "Actor 2"}
+                       }
+                     ]
+                   }
+                 }
+               ],
+               "__type" => %{"fields" => fields}
+             }
+           } = result
+
+    assert %{"name" => "position", "type" => %{"kind" => "SCALAR", "name" => "Int"}} in fields
+
+    assert %{"name" => "distanceMeters", "type" => %{"kind" => "SCALAR", "name" => "Int"}} in fields
+    assert Enum.any?(fields, &match?(%{"name" => "movie"}, &1))
+  end
+
   test "works with :offset strategy" do
     movie =
       AshGraphql.Test.Movie
