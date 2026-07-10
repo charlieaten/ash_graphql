@@ -1549,6 +1549,33 @@ defmodule AshGraphql.Graphql.Resolver do
     }
   end
 
+  defp paginate_relationship(
+         page,
+         %{strategy: strategy},
+         parent,
+         relationship,
+         arguments
+       )
+       when is_list(page) and strategy in [:relay, :keyset] do
+    count_key = "__paginated_#{relationship.name}_count__"
+    count = Map.get(parent.aggregates, count_key) || length(page)
+    limit = arguments[:first] || arguments[:last] || length(page)
+    {results, remaining} = Enum.split(page, limit)
+
+    keyset_page = %Ash.Page.Keyset{
+      results: results,
+      count: count,
+      before: arguments[:before],
+      after: arguments[:after],
+      more?: remaining != []
+    }
+
+    paginate_with_keyset(keyset_page, strategy == :relay)
+  end
+
+  defp paginate_relationship(page, pagination_config, _parent, _relationship, _arguments),
+    do: paginate_relationship(page, pagination_config)
+
   defp paginate_relationship(page, %{strategy: strategy}) do
     paginate_relationship(page, strategy)
   end
@@ -3500,7 +3527,7 @@ defmodule AshGraphql.Graphql.Resolver do
 
     result =
       page
-      |> paginate_relationship(pagination_config)
+      |> paginate_relationship(pagination_config, parent, relationship, resolution.arguments)
       |> add_relationship_edge_fields(parent, relationship, pagination_config, resolution, domain)
 
     Absinthe.Resolution.put_result(resolution, result)
@@ -3563,8 +3590,17 @@ defmodule AshGraphql.Graphql.Resolver do
 
     result =
       case relationship.cardinality do
-        :many -> paginate_relationship(value, pagination_config)
-        :one -> {:ok, value}
+        :many ->
+          paginate_relationship(
+            value,
+            pagination_config,
+            join_row,
+            relationship,
+            resolution.arguments
+          )
+
+        :one ->
+          {:ok, value}
       end
 
     Absinthe.Resolution.put_result(resolution, result)

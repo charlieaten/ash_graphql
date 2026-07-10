@@ -23,7 +23,8 @@ defmodule AshGraphql.Test.Movie do
         ]
       ],
       reviews: :offset,
-      awards: :keyset
+      awards: :keyset,
+      unrelated_actors: :relay
     )
 
     queries do
@@ -68,6 +69,11 @@ defmodule AshGraphql.Test.Movie do
   relationships do
     many_to_many(:actors, AshGraphql.Test.Actor,
       through: AshGraphql.Test.MovieActor,
+      public?: true
+    )
+
+    has_many(:unrelated_actors, AshGraphql.Test.Actor,
+      no_attributes?: true,
       public?: true
     )
 
