@@ -96,6 +96,75 @@ defmodule AshGraphql.RelationshipPaginationTest do
     assert [%{"node" => %{"name" => "Actor 2"}} | _] = edges
   end
 
+  test "relay pagination returns a connection for an empty no-attributes relationship" do
+    AshGraphql.Test.Movie
+    |> Ash.Changeset.for_create(:create, title: "Foo")
+    |> Ash.create!()
+
+    document =
+      """
+      query Movies {
+        getMovies {
+          unrelatedActors(first: 1) {
+            count
+            edges {
+              node {
+                name
+              }
+            }
+            pageInfo {
+              hasNextPage
+              hasPreviousPage
+              startCursor
+              endCursor
+            }
+          }
+        }
+      }
+      """
+
+    assert {:ok, result} = Absinthe.run(document, AshGraphql.Test.Schema)
+    refute Map.has_key?(result, :errors)
+
+    assert %{data: %{"getMovies" => [%{"unrelatedActors" => connection}]}} = result
+
+    assert connection == %{
+             "count" => 0,
+             "edges" => [],
+             "pageInfo" => %{
+               "hasNextPage" => false,
+               "hasPreviousPage" => false,
+               "startCursor" => nil,
+               "endCursor" => nil
+             }
+           }
+
+    for i <- 1..2 do
+      AshGraphql.Test.Actor
+      |> Ash.Changeset.for_create(:create, name: "Actor #{i}")
+      |> Ash.create!()
+    end
+
+    assert {:ok, result} = Absinthe.run(document, AshGraphql.Test.Schema)
+    refute Map.has_key?(result, :errors)
+
+    assert %{
+             data: %{
+               "getMovies" => [
+                 %{
+                   "unrelatedActors" => %{
+                     "count" => 2,
+                     "edges" => [%{"node" => %{"name" => name}}],
+                     "pageInfo" => %{"hasNextPage" => true}
+                   }
+                 }
+               ]
+             }
+           } = result
+
+    assert name in ["Actor 1", "Actor 2"]
+  end
+
   test "relay strategy exposes configured many_to_many join fields on edges" do
     movie =
       AshGraphql.Test.Movie
