@@ -485,6 +485,15 @@ defmodule AshGraphql.Graphql.Resolver do
           pagination = Ash.Resource.Info.action(resource, action).pagination
           query = apply_load_arguments(args, Ash.Query.new(resource), true, context, relay_ids?)
 
+          pagination_strategy =
+            AshGraphql.Resource.query_pagination_strategy(
+              gql_query,
+              Ash.Resource.Info.action(resource, action)
+            )
+
+          count_only? =
+            count_only_selection?(resolution, resource, pagination_strategy, relay?)
+
           {result, modify_args} =
             with {:ok, opts} <-
                    validate_resolve_opts(
@@ -498,13 +507,7 @@ defmodule AshGraphql.Graphql.Resolver do
                      action
                    ),
                  result_fields <-
-                   get_result_fields(
-                     AshGraphql.Resource.query_pagination_strategy(
-                       gql_query,
-                       Ash.Resource.Info.action(resource, action)
-                     ),
-                     relay?
-                   ),
+                   get_result_fields(pagination_strategy, relay?),
                  query <-
                    query
                    |> Ash.Query.set_tenant(Map.get(context, :tenant))
@@ -519,25 +522,36 @@ defmodule AshGraphql.Graphql.Resolver do
                      authorize?: AshGraphql.Domain.Info.authorize?(domain),
                      tracer: AshGraphql.Domain.Info.tracer(domain)
                    ),
+                 count_only? <- count_only? && count_optimizable?(query),
                  query <-
-                   load_fields(
-                     query,
-                     [
-                       domain: domain,
-                       tenant: Map.get(context, :tenant),
-                       authorize?: AshGraphql.Domain.Info.authorize?(domain),
-                       tracer: AshGraphql.Domain.Info.tracer(domain),
-                       actor: Map.get(context, :actor)
-                     ],
-                     resource,
-                     resolution,
-                     resolution.path,
-                     context,
-                     type_name,
-                     result_fields
-                   ),
-                 {:ok, page} <- Ash.read(query, opts) do
-              result = paginate(resource, gql_query, action, page, relay?)
+                   (if count_only? do
+                      query
+                    else
+                      load_fields(
+                        query,
+                        [
+                          domain: domain,
+                          tenant: Map.get(context, :tenant),
+                          authorize?: AshGraphql.Domain.Info.authorize?(domain),
+                          tracer: AshGraphql.Domain.Info.tracer(domain),
+                          actor: Map.get(context, :actor)
+                        ],
+                        resource,
+                        resolution,
+                        resolution.path,
+                        context,
+                        type_name,
+                        result_fields
+                      )
+                    end),
+                 {:ok, page} <- read_page_or_count(query, opts, count_only?) do
+              result =
+                if count_only? do
+                  {:ok, %{count: page}}
+                else
+                  paginate(resource, gql_query, action, page, relay?)
+                end
+
               {result, [query, result]}
             else
               {:error, error} ->
@@ -1291,6 +1305,45 @@ defmodule AshGraphql.Graphql.Resolver do
 
       {:ok, page_opts}
     end
+  end
+
+  defp count_only_selection?(resolution, resource, strategy, relay?, nested \\ [])
+
+  defp count_only_selection?(_resolution, _resource, strategy, _relay?, _nested)
+       when strategy not in [:relay, :keyset, :offset],
+       do: false
+
+  defp count_only_selection?(resolution, resource, strategy, relay?, nested) do
+    type = page_type(resource, strategy, relay?)
+
+    resolution
+    |> fields(nested, type)
+    |> names_only()
+    |> Enum.uniq()
+    |> Kernel.==([:count])
+  end
+
+  defp read_page_or_count(query, opts, true) do
+    Ash.count(query, Keyword.delete(opts, :page))
+  end
+
+  defp read_page_or_count(query, opts, false) do
+    Ash.read(query, opts)
+  end
+
+  defp count_optimizable?(query) do
+    is_nil(Map.get(query.action, :manual)) &&
+      Enum.all?(
+        [
+          query.before_transaction,
+          query.after_transaction,
+          query.around_transaction,
+          query.before_action,
+          query.after_action,
+          query.authorize_results
+        ],
+        &Enum.empty?/1
+      )
   end
 
   defp validate_offset_opts(opts, :offset, %{
@@ -2683,6 +2736,15 @@ defmodule AshGraphql.Graphql.Resolver do
               _ -> []
             end)
 
+          count_only? =
+            count_only_selection?(
+              resolution,
+              relationship.destination,
+              pagination_strategy,
+              relay?,
+              nested
+            )
+
           related_query =
             if pagination_strategy && pagination_strategy != :none do
               case page_opts(
@@ -2708,49 +2770,89 @@ defmodule AshGraphql.Graphql.Resolver do
             args
             |> apply_load_arguments(related_query, will_paginate?, context, false)
             |> set_query_arguments(read_action, args)
-            |> select_fields(
-              relationship.destination,
-              resolution,
-              nil,
-              nested
-            )
-            |> load_fields(
-              load_opts,
-              relationship.destination,
-              resolution,
-              [
-                selection | path
-              ],
-              context,
-              nil,
-              result_fields
-            )
-            |> maybe_select_join_destination_attribute(relationship, pagination_config)
 
-          if selection.alias do
-            {type, constraints} =
-              case relationship.cardinality do
-                :many ->
-                  {{:array, :struct}, items: [instance_of: relationship.destination]}
+          count_query =
+            if count_only? do
+              related_query
+              |> Ash.Query.for_read(read_action.name, %{}, load_opts)
+              |> Ash.Query.unset([
+                :sort,
+                :distinct,
+                :distinct_sort,
+                :lock,
+                :load,
+                :page,
+                :aggregates
+              ])
+            end
 
-                :one ->
-                  {:struct, instance_of: relationship.destination}
-              end
+          count_only? = count_only? && count_optimizable?(count_query)
 
-            {:ok, calc} =
-              Ash.Query.Calculation.new(
-                {:__ash_graphql_relationship__, selection.alias},
-                Ash.Resource.Calculation.LoadRelationship,
-                Keyword.merge(load_opts, relationship: relationship.name, query: related_query),
-                type,
-                constraints
+          related_query =
+            if count_only? do
+              related_query
+            else
+              related_query
+              |> select_fields(
+                relationship.destination,
+                resolution,
+                nil,
+                nested
               )
+              |> load_fields(
+                load_opts,
+                relationship.destination,
+                resolution,
+                [
+                  selection | path
+                ],
+                context,
+                nil,
+                result_fields
+              )
+              |> maybe_select_join_destination_attribute(relationship, pagination_config)
+            end
 
-            [
-              calc
-            ]
-          else
-            [{relationship.name, related_query}]
+          cond do
+            count_only? ->
+              aggregate_name =
+                relationship_count_aggregate_name(relationship, selection.alias)
+
+              {:ok, aggregate} =
+                Ash.Query.Aggregate.new(resource, aggregate_name, :count,
+                  path: [relationship.name],
+                  query: count_query,
+                  default: 0,
+                  read_action: read_action.name
+                )
+
+              [aggregate]
+
+            selection.alias ->
+              {type, constraints} =
+                case relationship.cardinality do
+                  :many ->
+                    {{:array, :struct}, items: [instance_of: relationship.destination]}
+
+                  :one ->
+                    {:struct, instance_of: relationship.destination}
+                end
+
+              {:ok, calc} =
+                Ash.Query.Calculation.new(
+                  {:__ash_graphql_relationship__, selection.alias},
+                  Ash.Resource.Calculation.LoadRelationship,
+                  Keyword.merge(load_opts, relationship: relationship.name, query: related_query),
+                  type,
+                  constraints
+                )
+
+              [
+                calc
+              ]
+
+            true ->
+              [{relationship.name, related_query}]
           end
 
         true ->
@@ -3518,19 +3620,42 @@ defmodule AshGraphql.Graphql.Resolver do
         %{source: parent} = resolution,
         {domain, relationship, pagination_config}
       ) do
-    page =
-      if resolution.definition.alias do
-        Map.get(parent.calculations, {:__ash_graphql_relationship__, resolution.definition.alias})
-      else
-        Map.get(parent, relationship.name)
-      end
+    count_aggregate_name =
+      relationship_count_aggregate_name(relationship, resolution.definition.alias)
 
     result =
-      page
-      |> paginate_relationship(pagination_config, parent, relationship, resolution.arguments)
-      |> add_relationship_edge_fields(parent, relationship, pagination_config, resolution, domain)
+      case Map.fetch(parent.aggregates, count_aggregate_name) do
+        {:ok, count} ->
+          {:ok, %{count: count}}
+
+        :error ->
+          page =
+            if resolution.definition.alias do
+              Map.get(
+                parent.calculations,
+                {:__ash_graphql_relationship__, resolution.definition.alias}
+              )
+            else
+              Map.get(parent, relationship.name)
+            end
+
+          page
+          |> paginate_relationship(pagination_config, parent, relationship, resolution.arguments)
+          |> add_relationship_edge_fields(
+            parent,
+            relationship,
+            pagination_config,
+            resolution,
+            domain
+          )
+      end
 
     Absinthe.Resolution.put_result(resolution, result)
+  end
+
+  defp relationship_count_aggregate_name(relationship, alias_name) do
+    response_name = alias_name || relationship.name
+    "__ash_graphql_#{relationship.name}_#{response_name}_count__"
   end
 
   def resolve_edge_join_field(%Absinthe.Resolution{state: :resolved} = resolution, _),
