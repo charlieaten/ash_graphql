@@ -5,6 +5,11 @@
 defmodule AshGraphql.RelayTest do
   use ExUnit.Case, async: false
 
+  @doc false
+  def handle_telemetry(event, _measurements, metadata, test_pid) do
+    send(test_pid, {event, metadata})
+  end
+
   setup do
     on_exit(fn ->
       AshGraphql.TestHelpers.stop_ets()
@@ -38,6 +43,35 @@ defmodule AshGraphql.RelayTest do
       end
 
       :ok
+    end
+
+    test "count-only selections skip the paginated read" do
+      telemetry_id = {__MODULE__, make_ref()}
+      domain = Ash.Domain.Info.short_name(AshGraphql.Test.Domain)
+
+      :telemetry.attach_many(
+        telemetry_id,
+        [[:ash, domain, :read, :start], [:ash, domain, :aggregate, :start]],
+        &__MODULE__.handle_telemetry/4,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach(telemetry_id) end)
+
+      document = """
+      query RelayTagCount {
+        getRelayTags {
+          count
+        }
+      }
+      """
+
+      assert {:ok, %{data: %{"getRelayTags" => %{"count" => 5}}}} =
+               Absinthe.run(document, AshGraphql.Test.Schema)
+
+      assert_received {[:ash, ^domain, :aggregate, :start], %{resource: AshGraphql.Test.RelayTag}}
+
+      refute_received {[:ash, ^domain, :read, :start], %{resource: AshGraphql.Test.RelayTag}}
     end
 
     test "neither first nor last passed" do
