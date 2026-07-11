@@ -5,6 +5,11 @@
 defmodule AshGraphql.RelationshipPaginationTest do
   use ExUnit.Case, async: false
 
+  @doc false
+  def handle_telemetry(event, _measurements, metadata, test_pid) do
+    send(test_pid, {event, metadata})
+  end
+
   setup do
     on_exit(fn ->
       AshGraphql.TestHelpers.stop_ets()
@@ -94,6 +99,97 @@ defmodule AshGraphql.RelationshipPaginationTest do
 
     assert length(edges) == 4
     assert [%{"node" => %{"name" => "Actor 2"}} | _] = edges
+  end
+
+  test "count-only relay relationships only execute the correlated count" do
+    movie =
+      AshGraphql.Test.Movie
+      |> Ash.Changeset.for_create(:create, title: "Foo")
+      |> Ash.create!()
+
+    for i <- 1..5 do
+      AshGraphql.Test.Actor
+      |> Ash.Changeset.for_create(:create, name: "Actor #{i}")
+      |> Ash.Changeset.manage_relationship(:movies, movie, type: :append)
+      |> Ash.create!()
+    end
+
+    telemetry_id = {__MODULE__, make_ref()}
+    domain = Ash.Domain.Info.short_name(AshGraphql.Test.Domain)
+
+    :telemetry.attach(
+      telemetry_id,
+      [:ash, domain, :read, :start],
+      &__MODULE__.handle_telemetry/4,
+      self()
+    )
+
+    on_exit(fn -> :telemetry.detach(telemetry_id) end)
+
+    document = """
+    query Movies {
+      getMovies {
+        actors(first: 1) {
+          count
+        }
+      }
+    }
+    """
+
+    assert {:ok,
+            %{
+              data: %{
+                "getMovies" => [
+                  %{"actors" => %{"count" => 5}}
+                ]
+              }
+            }} = Absinthe.run(document, AshGraphql.Test.Schema)
+
+    assert_received {[:ash, ^domain, :read, :start], %{resource: AshGraphql.Test.Movie}}
+
+    # The ETS data layer evaluates the correlated aggregate with a destination read. A normal
+    # paginated relationship additionally executes a second destination read for its records.
+    assert_received {[:ash, ^domain, :read, :start], %{resource: AshGraphql.Test.Actor}}
+    refute_received {[:ash, ^domain, :read, :start], %{resource: AshGraphql.Test.Actor}}
+  end
+
+  test "count-only relay relationship aliases use independent aggregates" do
+    movie =
+      AshGraphql.Test.Movie
+      |> Ash.Changeset.for_create(:create, title: "Foo")
+      |> Ash.create!()
+
+    for i <- 1..3 do
+      AshGraphql.Test.Actor
+      |> Ash.Changeset.for_create(:create, name: "Actor #{i}")
+      |> Ash.Changeset.manage_relationship(:movies, movie, type: :append)
+      |> Ash.create!()
+    end
+
+    document = """
+    query Movies {
+      getMovies {
+        firstActors: actors(first: 1, filter: {name: {eq: "Actor 1"}}) {
+          count
+        }
+        twoActors: actors(first: 2, filter: {name: {in: ["Actor 1", "Actor 2"]}}) {
+          count
+        }
+      }
+    }
+    """
+
+    assert {:ok,
+            %{
+              data: %{
+                "getMovies" => [
+                  %{
+                    "firstActors" => %{"count" => 1},
+                    "twoActors" => %{"count" => 2}
+                  }
+                ]
+              }
+            }} = Absinthe.run(document, AshGraphql.Test.Schema)
   end
 
   test "relay pagination returns a connection for an empty no-attributes relationship" do
