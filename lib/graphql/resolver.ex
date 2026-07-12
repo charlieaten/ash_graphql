@@ -1726,23 +1726,25 @@ defmodule AshGraphql.Graphql.Resolver do
           pagination_config
         )
 
+      join_relationship =
+        Ash.Resource.Info.relationship(relationship.source, relationship.join_relationship)
+
       query =
-        relationship.through
+        join_relationship.destination
         |> Ash.Query.new()
         |> Ash.Query.set_tenant(Map.get(context, :tenant))
         |> Ash.Query.set_context(get_context(context))
         |> Ash.Query.filter(
-          ^ref(relationship.source_attribute_on_join_resource) == ^source_value and
-            ^ref(relationship.destination_attribute_on_join_resource) in ^destination_values
+          ^ref(relationship.destination_attribute_on_join_resource) in ^destination_values
         )
-        |> select_fields(relationship.through, resolution, edge_type, ["edges"])
+        |> select_fields(join_relationship.destination, resolution, edge_type, ["edges"])
         |> Ash.Query.ensure_selected([
           relationship.source_attribute_on_join_resource,
           relationship.destination_attribute_on_join_resource
         ])
         |> load_fields(
           load_opts,
-          relationship.through,
+          join_relationship.destination,
           resolution,
           resolution.path,
           context,
@@ -1758,8 +1760,10 @@ defmodule AshGraphql.Graphql.Resolver do
         tracer: AshGraphql.Domain.Info.tracer(domain)
       ]
 
-      case Ash.read(query, opts) do
-        {:ok, join_rows} ->
+      case Ash.load(parent, [{relationship.join_relationship, query}], opts) do
+        {:ok, loaded_parent} ->
+          join_rows = Map.get(loaded_parent, relationship.join_relationship)
+
           {:ok,
            Map.new(join_rows, fn join_row ->
              {Map.get(join_row, relationship.destination_attribute_on_join_resource), join_row}
