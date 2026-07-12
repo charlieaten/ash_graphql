@@ -22,6 +22,14 @@ defmodule AshGraphql.Test.Movie do
           fields: [:position, :distance_meters, :movie]
         ]
       ],
+      selected_actors: [
+        strategy: :relay,
+        name: :movie_selected_actors_connection,
+        edge: [
+          name: :movie_selected_actors_edge,
+          fields: [:rating]
+        ]
+      ],
       reviews: :offset,
       awards: :keyset,
       unrelated_actors: :relay
@@ -71,6 +79,19 @@ defmodule AshGraphql.Test.Movie do
       through: AshGraphql.Test.MovieActor,
       public?: true
     )
+
+    has_many :selected_actor_join_rows, AshGraphql.Test.MovieActorSelection do
+      destination_attribute(:movie_id)
+      filter(expr(selected == true))
+    end
+
+    many_to_many :selected_actors, AshGraphql.Test.Actor do
+      join_relationship(:selected_actor_join_rows)
+      source_attribute_on_join_resource(:movie_id)
+      destination_attribute_on_join_resource(:actor_id)
+      unique_on_join_relationship? true
+      public?(true)
+    end
 
     has_many(:unrelated_actors, AshGraphql.Test.Actor,
       no_attributes?: true,

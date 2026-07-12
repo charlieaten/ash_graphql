@@ -348,6 +348,72 @@ defmodule AshGraphql.RelationshipPaginationTest do
     assert Enum.any?(fields, &match?(%{"name" => "movie"}, &1))
   end
 
+  test "relay edge fields are loaded through the configured join relationship" do
+    movie =
+      AshGraphql.Test.Movie
+      |> Ash.Changeset.for_create(:create, title: "Foo")
+      |> Ash.create!()
+
+    actor =
+      AshGraphql.Test.Actor
+      |> Ash.Changeset.for_create(:create, name: "Actor")
+      |> Ash.create!()
+
+    on_exit(fn ->
+      Ash.destroy!(actor)
+      Ash.destroy!(movie)
+    end)
+
+    AshGraphql.Test.MovieActorSelection
+    |> Ash.Changeset.for_create(:create,
+      movie_id: movie.id,
+      actor_id: actor.id,
+      rating: 5,
+      selected: true
+    )
+    |> Ash.create!()
+
+    AshGraphql.Test.MovieActorSelection
+    |> Ash.Changeset.for_create(:create,
+      movie_id: movie.id,
+      actor_id: actor.id,
+      rating: 1,
+      selected: false
+    )
+    |> Ash.create!()
+
+    document =
+      """
+      query Movies {
+        getMovies {
+          selectedActors(first: 10) {
+            edges {
+              rating
+              node {
+                name
+              }
+            }
+          }
+        }
+      }
+      """
+
+    assert {:ok, result} = Absinthe.run(document, AshGraphql.Test.Schema)
+    refute Map.has_key?(result, :errors)
+
+    assert %{
+             data: %{
+               "getMovies" => [
+                 %{
+                   "selectedActors" => %{
+                     "edges" => [%{"rating" => 5, "node" => %{"name" => "Actor"}}]
+                   }
+                 }
+               ]
+             }
+           } = result
+  end
+
   test "works with :offset strategy" do
     movie =
       AshGraphql.Test.Movie
