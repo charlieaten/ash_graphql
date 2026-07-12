@@ -48,6 +48,7 @@ defmodule AshGraphql.Test.Domain do
     resource(AshGraphql.Test.MapTypes)
     resource(AshGraphql.Test.Movie)
     resource(AshGraphql.Test.MovieActor)
+    resource(AshGraphql.Test.MovieActorSelection)
     resource(AshGraphql.Test.MultitenantPostTag)
     resource(AshGraphql.Test.MultitenantTag)
     resource(AshGraphql.Test.NoGraphql)
