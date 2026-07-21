@@ -31,6 +31,7 @@ defmodule AshGraphql.Test.Movie do
         ]
       ],
       reviews: :offset,
+      reviews_by_text: :relay,
       awards: :keyset,
       unrelated_actors: :relay
     )
@@ -89,7 +90,6 @@ defmodule AshGraphql.Test.Movie do
       join_relationship(:selected_actor_join_rows)
       source_attribute_on_join_resource(:movie_id)
       destination_attribute_on_join_resource(:actor_id)
-      unique_on_join_relationship? true
       public?(true)
     end
 
@@ -99,6 +99,12 @@ defmodule AshGraphql.Test.Movie do
     )
 
     has_many(:reviews, AshGraphql.Test.Review, public?: true)
+
+    has_many(:reviews_by_text, AshGraphql.Test.Review,
+      read_action: :by_text,
+      public?: true
+    )
+
     has_many(:awards, AshGraphql.Test.Award, public?: true)
   end
 end

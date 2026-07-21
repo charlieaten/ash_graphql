@@ -153,6 +153,41 @@ defmodule AshGraphql.RelationshipPaginationTest do
     refute_received {[:ash, ^domain, :read, :start], %{resource: AshGraphql.Test.Actor}}
   end
 
+  test "count-only relay relationships pass field arguments to the read action" do
+    movie =
+      AshGraphql.Test.Movie
+      |> Ash.Changeset.for_create(:create, title: "Foo")
+      |> Ash.create!()
+
+    for i <- 1..3 do
+      AshGraphql.Test.Review
+      |> Ash.Changeset.for_create(:create, text: "Review #{i}")
+      |> Ash.Changeset.manage_relationship(:movie, movie, type: :append)
+      |> Ash.create!()
+    end
+
+    document = """
+    query Movies {
+      getMovies {
+        reviewsByText(text: "Review 2", first: 1) {
+          count
+        }
+      }
+    }
+    """
+
+    assert {:ok,
+            %{
+              data: %{
+                "getMovies" => [
+                  %{
+                    "reviewsByText" => %{"count" => 1}
+                  }
+                ]
+              }
+            }} = Absinthe.run(document, AshGraphql.Test.Schema)
+  end
+
   test "count-only relay relationship aliases use independent aggregates" do
     movie =
       AshGraphql.Test.Movie
