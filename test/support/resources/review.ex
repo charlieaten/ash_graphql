@@ -17,6 +17,16 @@ defmodule AshGraphql.Test.Review do
   actions do
     default_accept(:*)
     defaults([:create, :read, :update, :destroy])
+
+    read :by_text do
+      pagination(required?: true, keyset?: true)
+
+      argument :text, :string do
+        allow_nil? false
+      end
+
+      filter(expr(text == ^arg(:text)))
+    end
   end
 
   attributes do
