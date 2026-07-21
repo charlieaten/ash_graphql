@@ -2770,15 +2770,30 @@ defmodule AshGraphql.Graphql.Resolver do
               related_query
             end
 
+          action_arguments = action_arguments(read_action, args)
+
+          count_only_with_dynamic_action_arguments? =
+            count_only? &&
+              action_arguments != Map.get(relationship, :read_action_arguments, %{})
+
+          count_only? =
+            count_only? && !count_only_with_dynamic_action_arguments?
+
           related_query =
             args
             |> apply_load_arguments(related_query, will_paginate?, context, false)
-            |> set_query_arguments(read_action, args)
+            |> Ash.Query.for_read(read_action.name, action_arguments, load_opts)
+            |> then(fn query ->
+              if count_only_with_dynamic_action_arguments? do
+                Ash.Query.unset(query, :page)
+              else
+                query
+              end
+            end)
 
           count_query =
             if count_only? do
               related_query
-              |> Ash.Query.for_read(read_action.name, %{}, load_opts)
               |> Ash.Query.unset([
                 :sort,
                 :distinct,
@@ -2830,7 +2845,7 @@ defmodule AshGraphql.Graphql.Resolver do
                   read_action: read_action.name
                 )
 
-              [aggregate]
+              [%{aggregate | read_action_arguments: action_arguments}]
 
             selection.alias ->
               {type, constraints} =
@@ -3289,6 +3304,13 @@ defmodule AshGraphql.Graphql.Resolver do
           query
       end
     end)
+  end
+
+  defp action_arguments(action, args) do
+    public_argument_names =
+      action.arguments |> Enum.filter(& &1.public?) |> Enum.map(& &1.name)
+
+    Map.take(args, public_argument_names)
   end
 
   defp add_root_errors(resolution, domain, resource, action, {:error, error_or_errors}) do
