@@ -429,6 +429,11 @@ defmodule AshGraphql.Resource do
       source: [
         type: :atom,
         doc: "The Ash field to use as the source when it differs from the GraphQL field name."
+      ],
+      deprecate: [
+        type: {:or, [:boolean, :string]},
+        doc:
+          "Marks the field as deprecated. Pass `true` to omit the reason, or a string to provide a deprecation reason."
       ]
     ],
     target: AshGraphql.Resource.Field
@@ -452,6 +457,11 @@ defmodule AshGraphql.Resource do
         type: :atom,
         doc:
           "The Ash field to use as the source when it differs from the GraphQL identity field name."
+      ],
+      deprecate: [
+        type: {:or, [:boolean, :string]},
+        doc:
+          "Marks the identity field as deprecated. Pass `true` to omit the reason, or a string to provide a deprecation reason."
       ]
     ],
     target: AshGraphql.Resource.Field,
@@ -5577,29 +5587,32 @@ defmodule AshGraphql.Resource do
   defp configured_field(resource, domain, schema, field) do
     source = AshGraphql.Resource.Info.field_source(field)
 
-    cond do
-      attribute = Ash.Resource.Info.attribute(resource, source) ->
-        attribute_field(resource, domain, schema, attribute, field.name)
+    field_definition =
+      cond do
+        attribute = Ash.Resource.Info.attribute(resource, source) ->
+          attribute_field(resource, domain, schema, attribute, field.name)
 
-      aggregate = Ash.Resource.Info.aggregate(resource, source) ->
-        aggregate_field(resource, domain, schema, aggregate, field.name)
+        aggregate = Ash.Resource.Info.aggregate(resource, source) ->
+          aggregate_field(resource, domain, schema, aggregate, field.name)
 
-      calculation = Ash.Resource.Info.calculation(resource, source) ->
-        calculation_field(resource, domain, schema, calculation, field.name)
+        calculation = Ash.Resource.Info.calculation(resource, source) ->
+          calculation_field(resource, domain, schema, calculation, field.name)
 
-      relationship = Ash.Resource.Info.relationship(resource, source) ->
-        relationship_field(resource, domain, schema, relationship, field.name, field.name)
+        relationship = Ash.Resource.Info.relationship(resource, source) ->
+          relationship_field(resource, domain, schema, relationship, field.name, field.name)
 
-      true ->
-        raise Spark.Error.DslError,
-          module: resource,
-          path: [:graphql, :fields],
-          message: """
-          Configured GraphQL field #{inspect(field.name)} uses source #{inspect(source)}, but that source is not an Ash attribute, relationship, aggregate, or calculation.
+        true ->
+          raise Spark.Error.DslError,
+            module: resource,
+            path: [:graphql, :fields],
+            message: """
+            Configured GraphQL field #{inspect(field.name)} uses source #{inspect(source)}, but that source is not an Ash attribute, relationship, aggregate, or calculation.
 
-          If this is a GraphQL-only alias, configure it with `source: :existing_ash_field`.
-          """
-    end
+            If this is a GraphQL-only alias, configure it with `source: :existing_ash_field`.
+            """
+      end
+
+    %{field_definition | directives: graphql_deprecation_directives(field.deprecate)}
   end
 
   defp attribute_field(resource, domain, schema, attribute, name) do
