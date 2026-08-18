@@ -8,6 +8,7 @@ defmodule AshGraphql.Resource.Field do
   defstruct [
     :name,
     :source,
+    :deprecate,
     :__spark_metadata__,
     identity?: false
   ]
