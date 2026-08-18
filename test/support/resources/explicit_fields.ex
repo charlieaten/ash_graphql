@@ -15,9 +15,9 @@ defmodule AshGraphql.Test.ExplicitFields do
     encode_primary_key?(false)
 
     fields do
-      identity :code
+      identity :code, deprecate: "Use `id` instead."
       field :name, source: :resolved_name
-      field :public_note
+      field :public_note, deprecate: true
     end
 
     queries do
