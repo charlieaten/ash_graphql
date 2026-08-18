@@ -16,8 +16,10 @@ defmodule AshGraphql.FieldsTest do
       """
       query {
         __type(name: "ExplicitFields") {
-          fields {
+          fields(includeDeprecated: true) {
             name
+            isDeprecated
+            deprecationReason
             type {
               kind
               name
@@ -41,6 +43,26 @@ defmodule AshGraphql.FieldsTest do
     assert fields["name"]["type"]["name"] == "String"
     assert fields["publicNote"]["type"]["kind"] == "SCALAR"
     assert fields["publicNote"]["type"]["name"] == "String"
+    assert fields["name"]["isDeprecated"] == false
+    assert fields["name"]["deprecationReason"] == nil
+    assert fields["code"]["isDeprecated"] == true
+    assert fields["code"]["deprecationReason"] == "Use `id` instead."
+    assert fields["publicNote"]["isDeprecated"] == true
+    assert fields["publicNote"]["deprecationReason"] == nil
+
+    {:ok, %{data: %{"__type" => %{"fields" => fields}}}} =
+      """
+      query {
+        __type(name: "ExplicitFields") {
+          fields {
+            name
+          }
+        }
+      }
+      """
+      |> Absinthe.run(AshGraphql.Test.Schema)
+
+    assert fields == [%{"name" => "name"}]
 
     {:ok, %{data: data}} =
       """
