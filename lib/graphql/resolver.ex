@@ -2751,7 +2751,7 @@ defmodule AshGraphql.Graphql.Resolver do
 
           nested =
             Enum.flat_map(Enum.reverse([selection | path]), fn
-              %{name: name} -> [name]
+              %{name: name, alias: field_alias} -> [{:selection, name, field_alias}]
               _ -> []
             end)
 
@@ -3289,6 +3289,11 @@ defmodule AshGraphql.Graphql.Resolver do
       end
     end)
     |> elem(0)
+  end
+
+  # Selection paths distinguish aliases; string paths describe schema wrappers such as edges/node.
+  defp field_matches_path?(field, {:selection, name, field_alias}) do
+    field.name == name && field.alias == field_alias
   end
 
   defp field_matches_path?(field, name) do

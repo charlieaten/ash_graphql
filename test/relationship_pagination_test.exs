@@ -644,6 +644,72 @@ defmodule AshGraphql.RelationshipPaginationTest do
   end
 
   describe "works when nested" do
+    test "nested counts follow the selected parent alias through fragments" do
+      movie = Ash.create!(AshGraphql.Test.Movie, %{title: "Movie"})
+      agents = for i <- 1..3, do: Ash.create!(AshGraphql.Test.Agent, %{name: "Agent #{i}"})
+
+      for {name, related_agents} <- [{"Actor 1", agents}, {"Actor 2", []}] do
+        AshGraphql.Test.Actor
+        |> Ash.Changeset.for_create(:create, name: name)
+        |> Ash.Changeset.manage_relationship(:movies, movie, type: :append)
+        |> Ash.Changeset.manage_relationship(:agents, related_agents, type: :append)
+        |> Ash.create!()
+      end
+
+      shallow = """
+      actors(first: 1, filter: {name: {eq: "Actor 1"}}) {
+        edges { node { name } }
+      }
+      """
+
+      nested = """
+      selectedActors: actors(first: 2, sort: [{field: NAME}]) {
+        edges { node { ...ActorAgents } }
+      }
+      """
+
+      for selections <- [shallow <> nested, nested <> shallow],
+          agent_selection <- ["count", "count edges { node { name } }"] do
+        document = """
+        query Movies {
+          getMovies {
+            #{selections}
+          }
+        }
+        fragment ActorAgents on Actor {
+          name
+          agents(first: 1, sort: [{field: NAME}]) {
+            #{agent_selection}
+          }
+        }
+        """
+
+        assert {:ok, result} = Absinthe.run(document, AshGraphql.Test.Schema)
+        refute Map.has_key?(result, :errors)
+
+        assert %{
+                 data: %{
+                   "getMovies" => [
+                     %{
+                       "selectedActors" => %{
+                         "edges" => [
+                           %{"node" => %{"name" => "Actor 1", "agents" => %{"count" => 3}}},
+                           %{"node" => %{"name" => "Actor 2", "agents" => %{"count" => 0}}}
+                         ]
+                       }
+                     }
+                   ]
+                 }
+               } = result
+
+        if agent_selection != "count" do
+          [first, second] = hd(result.data["getMovies"])["selectedActors"]["edges"]
+          assert first["node"]["agents"]["edges"] == [%{"node" => %{"name" => "Agent 1"}}]
+          assert second["node"]["agents"]["edges"] == []
+        end
+      end
+    end
+
     test "on return values for queries" do
       movie =
         AshGraphql.Test.Movie
